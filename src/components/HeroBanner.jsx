@@ -14,7 +14,7 @@ export default function HeroBanner({ movie, onSelectMovie, onRateMovie, userRati
       <div className="hero-content">
         <div className="hero-badge">
           <Sparkles size={13} />
-          <span>Top Algorithmic Pick • {movie.matchPercentage || 98}% Match</span>
+          <span>{movie.recommendationReason || 'Featured Pick'}</span>
         </div>
 
         <h1 className="hero-title">{movie.title}</h1>

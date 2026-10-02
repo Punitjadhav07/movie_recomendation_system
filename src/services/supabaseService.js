@@ -1,5 +1,4 @@
 import { getSupabase, isSupabaseConnected } from './supabaseClient';
-import { INITIAL_MOVIES, COMMUNITY_USERS } from '../data/mockMovies';
 
 /**
  * Fetches all movies from Supabase or fallback mock data
@@ -18,8 +17,8 @@ export async function fetchMoviesFromDb() {
       .limit(300);
 
     if (error || !data || data.length === 0) {
-      console.warn('Supabase movies query empty/failed, using local fallback:', error?.message);
-      return { data: INITIAL_MOVIES, source: 'local' };
+      console.warn('Supabase movies query empty/failed:', error?.message);
+      return { data: [], source: 'empty' };
     }
 
     // Map column naming if needed
@@ -43,7 +42,7 @@ export async function fetchMoviesFromDb() {
     return { data: mapped, source: 'supabase' };
   } catch (err) {
     console.error('Error in fetchMoviesFromDb:', err);
-    return { data: INITIAL_MOVIES, source: 'local' };
+    return { data: [], source: 'error' };
   }
 }
 
@@ -122,14 +121,13 @@ export async function fetchCommunityRatingsFromDb() {
       .limit(2000);
 
     if (error || !data || data.length === 0) {
-      return COMMUNITY_USERS;
+      return [];
     }
 
-    // Group ratings by user_id
     const userMap = {};
     data.forEach(r => {
       if (!userMap[r.user_id]) {
-        userMap[r.user_id] = { id: r.user_id, name: `User (${r.user_id})`, ratings: {} };
+        userMap[r.user_id] = { id: r.user_id, ratings: {} };
       }
       userMap[r.user_id].ratings[r.movie_id] = Number(r.rating);
     });
@@ -137,6 +135,6 @@ export async function fetchCommunityRatingsFromDb() {
     return Object.values(userMap);
   } catch (err) {
     console.error('Failed to fetch community ratings:', err);
-    return COMMUNITY_USERS;
+    return [];
   }
 }

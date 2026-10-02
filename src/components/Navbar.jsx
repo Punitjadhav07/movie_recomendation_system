@@ -9,8 +9,12 @@ export default function Navbar({
   setSearchQuery,
   ratedCount,
   onOpenTasteProfile,
+  onOpenQuickRate,
+  backendAvailable,
+  onLogout,
 }) {
-  const { user, role, logout } = useAuth();
+  const { user, role, logout: ctxLogout } = useAuth();
+  const logout = onLogout || ctxLogout;
 
   return (
     <nav className="navbar">

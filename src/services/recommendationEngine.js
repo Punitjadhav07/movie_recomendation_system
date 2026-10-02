@@ -172,16 +172,11 @@ export function generatePersonalizedRecommendations(userRatings, allMovies = INI
     const rawScore = (normGenreScore * 0.45) + (itemSimilarity * 0.35) + (normCommunity * 0.20);
     rawScores.push(rawScore);
 
-    // Generate dynamic explanation
-    let reason = "Top community match";
-    if (anchorMovie && itemSimilarity > 0.4) {
-      reason = `Because you rated "${anchorMovie.title}" ${maxRating}★`;
-    } else if (topNeighbor && topNeighbor.ratings[movie.id]) {
-      reason = `Loved by viewers similar to ${topNeighbor.name.split(' ')[0]}`;
-    } else if (genreScore > 2) {
-      const topGenre = movie.genres.find(g => (userGenrePreferences[g] || 0) > 2) || movie.genres[0];
-      reason = `Matches your affinity for ${topGenre}`;
-    }
+    // Generate genre-based explanation
+    const topMatchedGenre = movie.genres.find(g => (userGenrePreferences[g] || 0) > 0) || movie.genres[0];
+    const reason = topMatchedGenre
+      ? `Because you like ${topMatchedGenre}`
+      : 'Highly rated by the community';
 
     return {
       ...movie,

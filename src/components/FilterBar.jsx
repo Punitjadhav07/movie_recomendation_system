@@ -1,8 +1,11 @@
 import React from 'react';
-import { GENRES } from '../data/mockMovies';
 import { SlidersHorizontal } from 'lucide-react';
 
-const FILTER_GENRES = ['All', ...GENRES.filter(g => g !== 'All')];
+const FILTER_GENRES = [
+  'Action', 'Adventure', 'Animation', 'Children', 'Comedy', 'Crime',
+  'Documentary', 'Drama', 'Fantasy', 'Film-Noir', 'Horror', 'IMAX',
+  'Musical', 'Mystery', 'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western'
+];
 
 export default function FilterBar({
   selectedGenres,
@@ -10,7 +13,8 @@ export default function FilterBar({
   sortBy,
   setSortBy,
   minRating,
-  setMinRating
+  setMinRating,
+  showSortBy = true
 }) {
   const toggleGenre = (genre) => {
     if (genre === 'All') {
@@ -42,7 +46,7 @@ export default function FilterBar({
         >
           All
         </button>
-        {GENRES.filter(g => g !== 'All').map((genre) => (
+        {FILTER_GENRES.map((genre) => (
           <button
             key={genre}
             className={`genre-chip ${activeGenres.includes(genre) ? 'active' : ''}`}
@@ -55,21 +59,23 @@ export default function FilterBar({
 
       {/* Sorting & Filter Controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-          <SlidersHorizontal size={14} color="#9ca3af" />
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Sort by:</span>
-          <select
-            className="filter-sort-select"
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
-          >
-            <option value="match">Collaborative Match (Highest)</option>
-            <option value="rating">IMDb / Community Rating</option>
-            <option value="year_desc">Newest Release</option>
-            <option value="year_asc">Classic / Oldest</option>
-            <option value="title">Title (A-Z)</option>
-          </select>
-        </div>
+        {showSortBy && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <SlidersHorizontal size={14} color="#9ca3af" />
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Sort:</span>
+            <select
+              className="filter-sort-select"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+            >
+              <option value="popular">Most Popular</option>
+              <option value="rating">Highest Rated</option>
+              <option value="year_desc">Newest First</option>
+              <option value="year_asc">Oldest First</option>
+              <option value="title">Title (A-Z)</option>
+            </select>
+          </div>
+        )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
           <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Min Rating:</span>

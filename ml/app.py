@@ -1,209 +1,403 @@
 #!/usr/bin/env python3
 """
-CineMatch — Real-Time ML Recommendation API Service
-Powered by FastAPI, SVD Latent Matrix Factorization & Apache Spark Model Metrics
+CineMatch Recommendation API — FastAPI backend.
+
+Run from project root:
+  venv/bin/uvicorn ml.app:app --host 0.0.0.0 --port 8000 --reload
+
+Endpoints:
+  GET  /health
+  GET  /movies?page=1&limit=50&genre=Action&sort=popular
+  GET  /movies/search?q=jumanji&limit=20
+  GET  /movies/{movie_id}
+  POST /ratings                  body: {user_id, movie_id, rating}
+  GET  /ratings/{user_id}
+  POST /recommend                body: {ratings: {"296": 5.0, ...}, n: 10}
+  GET  /recommend/{user_id}?n=10 (for dataset users stored in processed_ratings.json)
+  GET  /similar/{movie_id}?n=4
 """
 
 import os
+import csv
 import json
-import math
+import re
 import numpy as np
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Optional
+from pydantic import BaseModel
+from typing import Dict, List, Optional
 
-app = FastAPI(
-    title="CineMatch ML Recommendation Service",
-    description="Real-time SVD Matrix Factorization & Spark ALS Recommendation API",
-    version="1.0.0"
-)
-
-# Enable CORS for React frontend (localhost:5173)
+app = FastAPI(title="CineMatch Recommendation API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# In-memory Model State
-MODEL_DIR = "ml/models"
-movie_catalog = []
-movie_id_map = {}
-movie_embeddings = {}
-latent_similarities = {}
-model_metadata = {}
-spark_results = {}
+# --- In-memory state (loaded once at startup) ---
+all_movies: List[dict] = []
+all_movies_idx: Dict[int, dict] = {}
+catalog_movies: List[dict] = []      # SVD-eligible (top 3000)
+catalog_idx: Dict[int, dict] = {}
+movie_embeddings: Dict[str, list] = {}
+latent_sims: Dict[str, list] = {}
+model_meta: dict = {}
+# ephemeral per-user ratings store (frontend always passes ratings in body anyway)
+user_ratings_store: Dict[str, Dict[int, float]] = {}
+# dataset users from processed_ratings.json (for GET /recommend/{user_id})
+dataset_user_ratings: Dict[str, Dict[int, float]] = {}
 
-def load_models():
-    global movie_catalog, movie_id_map, movie_embeddings, latent_similarities, model_metadata, spark_results
-    
-    if os.path.exists("data/processed_movies.json"):
-        with open("data/processed_movies.json", "r", encoding="utf-8") as f:
-            movie_catalog = json.load(f)
-            movie_id_map = {m["id"]: m for m in movie_catalog}
 
-    if os.path.exists(f"{MODEL_DIR}/movie_latent_embeddings.json"):
-        with open(f"{MODEL_DIR}/movie_latent_embeddings.json", "r", encoding="utf-8") as f:
-            movie_embeddings = json.load(f)
+def _parse_year(raw_title: str) -> int:
+    m = re.search(r'\((\d{4})\)', raw_title)
+    return int(m.group(1)) if m else 2000
 
-    if os.path.exists(f"{MODEL_DIR}/latent_similarities.json"):
-        with open(f"{MODEL_DIR}/latent_similarities.json", "r", encoding="utf-8") as f:
-            latent_similarities = json.load(f)
 
-    if os.path.exists(f"{MODEL_DIR}/model_metadata.json"):
-        with open(f"{MODEL_DIR}/model_metadata.json", "r", encoding="utf-8") as f:
-            model_metadata = json.load(f)
+def _clean_title(raw_title: str) -> str:
+    title = re.sub(r'\s*\(\d{4}\).*', '', raw_title).strip()
+    m = re.match(r'^(.*),\s*(The|A|An)$', title, re.IGNORECASE)
+    if m:
+        title = f"{m.group(2)} {m.group(1)}"
+    return title
 
-    if os.path.exists(f"{MODEL_DIR}/spark_als_results.json"):
-        with open(f"{MODEL_DIR}/spark_als_results.json", "r", encoding="utf-8") as f:
-            spark_results = json.load(f)
 
 @app.on_event("startup")
-def startup_event():
-    load_models()
-    print("🚀 CineMatch ML Service Loaded and Ready.")
+def startup():
+    global all_movies, all_movies_idx, catalog_movies, catalog_idx
+    global movie_embeddings, latent_sims, model_meta, dataset_user_ratings
 
-@app.get("/api/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "movies_indexed": len(movie_catalog),
-        "svd_model_loaded": len(movie_embeddings) > 0,
-        "spark_als_loaded": bool(spark_results)
-    }
+    # 1. Load SVD catalog (top 3000, has rating stats)
+    if os.path.exists("data/processed_movies.json"):
+        with open("data/processed_movies.json", encoding="utf-8") as f:
+            catalog_movies = json.load(f)
+        catalog_idx = {m["id"]: m for m in catalog_movies}
+        print(f"Catalog: {len(catalog_movies)} SVD-eligible movies loaded")
+    else:
+        print("WARNING: data/processed_movies.json not found. Run scripts/ingest_movie_lens.py")
 
-@app.get("/api/model-metrics")
-def get_model_metrics():
-    """Returns SVD and Apache Spark ALS model training benchmarks"""
-    return {
-        "svd_model": model_metadata or {
-            "algorithm": "Truncated SVD Matrix Factorization",
-            "latent_dimensions": 32,
-            "status": "Trained"
-        },
-        "spark_als": spark_results or {
-            "engine": "Apache Spark MLlib ALS",
-            "status": "Ready"
-        }
-    }
+    # 2. Load movie_stats.json for rating stats of all movies
+    movie_stats: Dict[int, dict] = {}
+    if os.path.exists("data/movie_stats.json"):
+        with open("data/movie_stats.json", encoding="utf-8") as f:
+            raw = json.load(f)
+        movie_stats = {int(k): v for k, v in raw.items()}
 
-@app.get("/api/similar/{movie_id}")
-def get_similar_movies_latent(movie_id: int, top_k: int = 4):
-    """Returns nearest neighbors in the SVD latent factor space"""
-    sims = latent_similarities.get(str(movie_id), [])
-    results = []
-    for item in sims[:top_k]:
-        m = movie_id_map.get(item["movie_id"])
-        if m:
-            results.append({
-                **m,
-                "latent_similarity": round(item["similarity"] * 100, 1),
-                "similarity_reason": f"{round(item['similarity'] * 100)}% Latent Factor Vector Alignment"
-            })
-    return {"movie_id": movie_id, "similar_movies": results}
+    # 3. Load ALL movies from CSV (for complete search coverage)
+    if os.path.exists("data/movies.csv"):
+        with open("data/movies.csv", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                mid = int(row["movieId"])
+                genres = [g.strip() for g in row["genres"].split("|")
+                          if g.strip() and g != "(no genres listed)"]
+                if not genres:
+                    genres = ["Unknown"]
+                year = _parse_year(row["title"])
+                title = _clean_title(row["title"])
+                stats = movie_stats.get(mid, {})
+                movie = {
+                    "id": mid,
+                    "title": title,
+                    "year": year,
+                    "genres": genres,
+                    "rating": round(stats.get("rating", 0.0), 2) if stats.get("rating") else None,
+                    "vote_count": stats.get("vote_count"),
+                }
+                all_movies.append(movie)
+                all_movies_idx[mid] = movie
+        print(f"All movies: {len(all_movies)} loaded from CSV")
+    else:
+        print("WARNING: data/movies.csv not found")
 
-@app.get("/api/recommend")
-def get_svd_recommendations(
-    ratings_json: Optional[str] = Query(None, description="JSON string of {movie_id: rating}"),
-    top_k: int = 12
-):
+    # 4. Load SVD model artifacts
+    if os.path.exists("ml/models/movie_latent_embeddings.json"):
+        with open("ml/models/movie_latent_embeddings.json", encoding="utf-8") as f:
+            movie_embeddings = json.load(f)
+        print(f"SVD embeddings: {len(movie_embeddings)} movies, dim={len(next(iter(movie_embeddings.values())))}")
+    else:
+        print("WARNING: ml/models/movie_latent_embeddings.json not found. Run ml/train_svd.py")
+
+    if os.path.exists("ml/models/latent_similarities.json"):
+        with open("ml/models/latent_similarities.json", encoding="utf-8") as f:
+            latent_sims = json.load(f)
+
+    if os.path.exists("ml/models/model_metadata.json"):
+        with open("ml/models/model_metadata.json", encoding="utf-8") as f:
+            model_meta = json.load(f)
+
+    # 5. Load dataset user ratings (for testing with real users)
+    if os.path.exists("data/processed_ratings.json"):
+        with open("data/processed_ratings.json", encoding="utf-8") as f:
+            raw_ratings = json.load(f)
+        for r in raw_ratings:
+            uid = r["user_id"]
+            if uid not in dataset_user_ratings:
+                dataset_user_ratings[uid] = {}
+            dataset_user_ratings[uid][r["movie_id"]] = r["rating"]
+        print(f"Dataset users: {len(dataset_user_ratings)} loaded")
+
+    print("CineMatch API ready.")
+
+
+# ------------------------------------------------------------------ helpers
+
+def _compute_recommendations(
+    user_ratings: Dict[int, float],
+    n: int = 10,
+    genre_filter: Optional[List[str]] = None
+) -> dict:
     """
-    Real-time SVD Latent Space Projection:
-    Projects user's rating vector into the SVD latent space and computes dot product scores.
-    """
-    user_ratings = {}
-    if ratings_json:
-        try:
-            user_ratings = json.loads(ratings_json)
-            # Normalize keys to int and values to float
-            user_ratings = {int(k): float(v) for k, v in user_ratings.items()}
-        except Exception:
-            pass
+    Compute Top-N recommendations using SVD latent factor projection.
 
-    # If no ratings provided, return top Bayesian rated items
-    if not user_ratings:
-        top_movies = sorted(movie_catalog, key=lambda x: x.get("rating", 0), reverse=True)[:top_k]
+    Algorithm:
+      1. Build user taste vector: u = sum((r - 3.5) * V_j) for each rated movie j
+      2. Score each unrated catalog movie i: score = cosine(u, V_i)
+      3. Convert score to predicted_rating: 3.5 + score * 1.5  (honest approximation)
+      4. Return top N sorted by predicted_rating, excluding already-rated movies.
+
+    Cold start: if no ratings provided, return most-popular catalog movies.
+    """
+    if not user_ratings or len(movie_embeddings) == 0:
+        # Cold start: return most popular (by vote_count)
+        popular = sorted(
+            catalog_movies,
+            key=lambda m: m.get("vote_count") or 0,
+            reverse=True
+        )
+        if genre_filter:
+            popular = [m for m in popular if any(g in m["genres"] for g in genre_filter)]
         return {
-            "algorithm": "Popularity / Top Rated Fallback",
-            "recommendations": [
-                {**m, "predicted_match": round((m["rating"] / 5.0) * 94), "reason": "Global High Community Praise"}
-                for m in top_movies
-            ]
+            "algorithm": "popularity_fallback",
+            "is_personalized": False,
+            "note": "Rate some movies to get personalized SVD recommendations.",
+            "recommendations": popular[:n]
         }
 
-    # Construct user taste vector in Latent Space
-    # user_vector = sum( (rating - 3.5) * movie_embedding[m_id] )
-    latent_dim = model_metadata.get("latent_dimensions", 32)
-    user_latent_vector = np.zeros(latent_dim, dtype=np.float32)
-    
+    k = model_meta.get("k", 64)
+    u_vec = np.zeros(k, dtype=np.float32)
     rated_count = 0
-    anchor_id = None
-    max_r = 0.0
 
-    for m_id, r in user_ratings.items():
-        m_str = str(m_id)
-        if m_str in movie_embeddings:
-            emb = np.array(movie_embeddings[m_str], dtype=np.float32)
-            weight = r - 3.2  # Positive weight for >= 3.5, negative for < 3
-            user_latent_vector += weight * emb
-            rated_count += 1
-            if r > max_r:
-                max_r = r
-                anchor_id = m_id
+    for mid, r in user_ratings.items():
+        emb = movie_embeddings.get(str(mid))
+        if emb is None:
+            continue
+        u_vec += (r - 3.5) * np.array(emb, dtype=np.float32)
+        rated_count += 1
 
-    # If user vector is zero or not enough ratings, fall back to anchor similarity
-    norm_u = np.linalg.norm(user_latent_vector)
-    if norm_u > 0:
-        user_latent_vector /= norm_u
+    if rated_count == 0 or np.linalg.norm(u_vec) == 0:
+        # All rated movies had no embeddings — fall back
+        popular = sorted(catalog_movies, key=lambda m: m.get("vote_count") or 0, reverse=True)
+        return {
+            "algorithm": "popularity_fallback",
+            "is_personalized": False,
+            "note": "None of your rated movies are in the SVD catalog. Showing popular picks.",
+            "recommendations": popular[:n]
+        }
+
+    u_norm = u_vec / np.linalg.norm(u_vec)
 
     scored = []
-    for m in movie_catalog:
-        m_id = m["id"]
-        m_str = str(m_id)
-        is_rated = m_id in user_ratings
+    for m in catalog_movies:
+        mid = m["id"]
+        if mid in user_ratings:
+            continue  # exclude already-rated
 
-        if m_str in movie_embeddings and norm_u > 0:
-            emb = np.array(movie_embeddings[m_str], dtype=np.float32)
-            norm_e = np.linalg.norm(emb)
-            if norm_e > 0:
-                dot = float(np.dot(user_latent_vector, emb) / norm_e)
-            else:
-                dot = 0.0
-        else:
-            dot = (m["rating"] - 3.5) / 1.5
+        emb = movie_embeddings.get(str(mid))
+        if emb is None:
+            continue
 
-        # Normalize score to percentage (50% to 99%)
-        match_pct = int(min(99, max(52, round((dot * 0.5 + 0.5) * 98))))
+        v = np.array(emb, dtype=np.float32)
+        v_norm_val = np.linalg.norm(v)
+        if v_norm_val == 0:
+            continue
 
-        # Formulate explanation
-        anchor_title = movie_id_map.get(anchor_id, {}).get("title", "your top pick")
-        if is_rated:
-            reason = f"Rated by you ({user_ratings[m_id]}★)"
-        elif dot > 0.4:
-            reason = f"Strong latent factor correlation with {anchor_title}"
-        elif dot > 0.15:
-            reason = f"Matches your affinity for {m['genres'][0]} cinema"
-        else:
-            reason = "Recommended based on community taste twins"
+        cosine = float(np.dot(u_norm, v) / v_norm_val)
+        # Honest approximation: map cosine [-1,1] to predicted_rating [1,5]
+        # We use 3.5 as the center (matches the training mean-centering)
+        predicted_rating = round(max(1.0, min(5.0, 3.5 + cosine * 1.5)), 2)
 
-        scored.append({
-            **m,
-            "predicted_match": match_pct,
-            "user_rating": user_ratings.get(m_id),
-            "is_rated": is_rated,
-            "latent_dot_score": round(dot, 4),
-            "recommendation_reason": reason
-        })
+        result = {**m, "predicted_rating": predicted_rating, "latent_score": round(cosine, 4)}
 
-    # Sort by predicted match percentage
-    scored.sort(key=lambda x: x["predicted_match"], reverse=True)
+        if genre_filter and not any(g in m["genres"] for g in genre_filter):
+            continue
+
+        scored.append(result)
+
+    scored.sort(key=lambda x: x["predicted_rating"], reverse=True)
 
     return {
-        "algorithm": "Real-time SVD Latent Factor Matrix Factorization",
-        "latent_dimensions": latent_dim,
-        "movies_evaluated": len(movie_catalog),
-        "user_ratings_count": rated_count,
-        "recommendations": scored[:top_k]
+        "algorithm": "svd_latent_projection",
+        "is_personalized": True,
+        "user_rated_in_catalog": rated_count,
+        "total_rated": len(user_ratings),
+        "recommendations": scored[:n]
+    }
+
+
+# ------------------------------------------------------------------ routes
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy",
+        "total_movies": len(all_movies),
+        "catalog_movies": len(catalog_movies),
+        "svd_embeddings": len(movie_embeddings),
+        "model": {
+            "k": model_meta.get("k"),
+            "explained_variance": model_meta.get("explained_variance_ratio"),
+            "trained_at": model_meta.get("timestamp")
+        }
+    }
+
+
+@app.get("/movies")
+def get_movies(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    genre: Optional[str] = None,
+    sort: str = Query("popular", enum=["popular", "rating", "year_desc", "year_asc", "title"])
+):
+    """Returns paginated catalog movies (SVD-eligible top 3000, with rating stats)."""
+    movies = catalog_movies[:]
+
+    if genre and genre.lower() not in ("all", ""):
+        movies = [m for m in movies if genre in m["genres"]]
+
+    if sort == "popular":
+        movies.sort(key=lambda m: m.get("vote_count") or 0, reverse=True)
+    elif sort == "rating":
+        movies.sort(key=lambda m: m.get("rating") or 0, reverse=True)
+    elif sort == "year_desc":
+        movies.sort(key=lambda m: m.get("year") or 0, reverse=True)
+    elif sort == "year_asc":
+        movies.sort(key=lambda m: m.get("year") or 0)
+    elif sort == "title":
+        movies.sort(key=lambda m: m["title"])
+
+    total = len(movies)
+    start = (page - 1) * limit
+    end = start + limit
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit,
+        "movies": movies[start:end]
+    }
+
+
+@app.get("/movies/search")
+def search_movies(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=100)
+):
+    """Searches ALL 62k movies from movies.csv by title (case-insensitive substring)."""
+    q_lower = q.strip().lower()
+    if not q_lower:
+        raise HTTPException(status_code=400, detail="Search query cannot be empty")
+
+    results = [m for m in all_movies if q_lower in m["title"].lower()]
+    results.sort(key=lambda m: (
+        not m["title"].lower().startswith(q_lower),
+        -(m.get("vote_count") or 0)
+    ))
+    return {"query": q, "total": len(results), "movies": results[:limit]}
+
+
+@app.get("/movies/{movie_id}")
+def get_movie(movie_id: int):
+    movie = all_movies_idx.get(movie_id)
+    if not movie:
+        raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
+    return movie
+
+
+class RatingPayload(BaseModel):
+    user_id: str
+    movie_id: int
+    rating: float  # 0.5 – 5.0
+
+
+@app.post("/ratings")
+def post_rating(payload: RatingPayload):
+    if not (0.5 <= payload.rating <= 5.0):
+        raise HTTPException(status_code=400, detail="Rating must be between 0.5 and 5.0")
+    if payload.movie_id not in all_movies_idx:
+        raise HTTPException(status_code=404, detail=f"Movie {payload.movie_id} not found")
+
+    if payload.user_id not in user_ratings_store:
+        user_ratings_store[payload.user_id] = {}
+    user_ratings_store[payload.user_id][payload.movie_id] = payload.rating
+
+    return {"success": True, "user_id": payload.user_id, "movie_id": payload.movie_id, "rating": payload.rating}
+
+
+@app.get("/ratings/{user_id}")
+def get_ratings(user_id: str):
+    ratings = user_ratings_store.get(user_id) or dataset_user_ratings.get(user_id)
+    if ratings is None:
+        raise HTTPException(status_code=404, detail=f"No ratings found for user '{user_id}'")
+    return {"user_id": user_id, "ratings": ratings, "count": len(ratings)}
+
+
+class RecommendPayload(BaseModel):
+    ratings: Dict[str, float]  # movieId (str) -> rating
+    n: int = 10
+    genre_filter: Optional[List[str]] = None
+
+
+@app.post("/recommend")
+def post_recommend(payload: RecommendPayload):
+    """
+    Personalized SVD recommendations.
+    Pass current user ratings in body. Excludes rated movies from results.
+    """
+    n = max(1, min(payload.n, 100))
+    ratings_int = {int(k): v for k, v in payload.ratings.items()}
+    result = _compute_recommendations(ratings_int, n=n, genre_filter=payload.genre_filter)
+    return result
+
+
+@app.get("/recommend/{user_id}")
+def get_recommend_user(user_id: str, n: int = Query(10, ge=1, le=100)):
+    """
+    Recommendations for a known dataset user (u_1 through u_2000).
+    Looks up their stored ratings from processed_ratings.json.
+    """
+    ratings = dataset_user_ratings.get(user_id)
+    if not ratings:
+        ratings = user_ratings_store.get(user_id)
+    if not ratings:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No ratings found for user '{user_id}'. Dataset users are u_1 through u_2000."
+        )
+    result = _compute_recommendations(ratings, n=n)
+    result["user_id"] = user_id
+    return result
+
+
+@app.get("/similar/{movie_id}")
+def get_similar(movie_id: int, n: int = Query(4, ge=1, le=20)):
+    """Returns nearest neighbors in SVD latent space."""
+    sims = latent_sims.get(str(movie_id), [])
+    if not sims:
+        movie = all_movies_idx.get(movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
+        # No SVD embedding — return empty
+        return {"movie_id": movie_id, "title": movie["title"], "similar": []}
+
+    results = []
+    for item in sims[:n]:
+        m = catalog_idx.get(item["movie_id"])
+        if m:
+            results.append({**m, "latent_similarity": item["similarity"]})
+
+    source = catalog_idx.get(movie_id) or all_movies_idx.get(movie_id)
+    return {
+        "movie_id": movie_id,
+        "title": source["title"] if source else str(movie_id),
+        "similar": results
     }

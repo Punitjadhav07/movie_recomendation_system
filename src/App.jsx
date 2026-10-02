@@ -1,193 +1,249 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { INITIAL_MOVIES, INITIAL_USER_RATINGS } from './data/mockMovies';
-import { generatePersonalizedRecommendations } from './services/recommendationEngine';
-import { fetchMoviesFromDb, syncRatingToSupabase } from './services/supabaseService';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { fetchMovies, searchMovies, getRecommendations, postRating, checkHealth } from './services/mlApi';
+import { syncRatingToSupabase } from './services/supabaseService';
 import Navbar from './components/Navbar';
 import GenreSelection from './pages/GenreSelection';
-import HeroBanner from './components/HeroBanner';
 import MovieCard from './components/MovieCard';
 import FilterBar from './components/FilterBar';
 import MovieDetailsModal from './components/MovieDetailsModal';
 import TasteProfileModal from './components/TasteProfileModal';
 import QuickRateDrawer from './components/QuickRateDrawer';
-import SupabaseConfigModal from './components/SupabaseConfigModal';
-import MLInsightsModal from './components/MLInsightsModal';
 import { useAuth } from './context/AuthContext';
 import AuthPage from './pages/AuthPage';
-import { Sparkles, Film, Star, Sliders, CheckCircle, RefreshCw, LogOut, Shield } from 'lucide-react';
+import { Sparkles, Film, Star, AlertCircle, Loader, RefreshCw } from 'lucide-react';
 
 export default function App() {
-  const { user, role, logout } = useAuth();
+  const { user, logout } = useAuth();
 
-  // If user is not authenticated, show the Login/Signup page first
-  if (!user) {
-    return <AuthPage />;
-  }
+  if (!user) return <AuthPage />;
 
-  // Application State
-  const [movies, setMovies] = useState(INITIAL_MOVIES);
-  const [dataSource, setDataSource] = useState('local');
-  const [userRatings, setUserRatings] = useState(() => {
-    const saved = localStorage.getItem('cinematch_ratings');
-    // Never seed fake ratings — start from empty so count is accurate
-    return saved ? JSON.parse(saved) : {};
-  });
+  const genreKey = `cinematch_user_genres_${user.id}`;
+  const ratingsKey = `cinematch_ratings_${user.id}`;
+  const ratedCacheKey = `cinematch_rated_cache_${user.id}`;
 
-  const [activeTab, setActiveTab] = useState('for-you'); // 'for-you' | 'top-rated' | 'all' | 'my-ratings'
-  const [searchQuery, setSearchQuery] = useState('');
+  // User preferences
   const [selectedGenres, setSelectedGenres] = useState(() => {
-    const saved = localStorage.getItem('cinematch_user_genres');
-    // 'dismissed' means the user already saw and skipped the modal — don't show again
+    const saved = localStorage.getItem(genreKey);
     if (saved === 'dismissed') return ['__all__'];
     return saved ? JSON.parse(saved) : [];
   });
-  const [sortBy, setSortBy] = useState('match');
+
+  // User ratings: {movieId: starRating}
+  const [userRatings, setUserRatings] = useState(() => {
+    const saved = localStorage.getItem(ratingsKey);
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  // Cache of movie objects the user has rated (for My Ratings tab)
+  const [ratedMoviesCache, setRatedMoviesCache] = useState(() => {
+    const saved = localStorage.getItem(ratedCacheKey);
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  // Movies from API (catalog browse)
+  const [catalogMovies, setCatalogMovies] = useState([]);
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+
+  // Recommendations from ML backend
+  const [recommendations, setRecommendations] = useState([]);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsPersonalized, setRecsPersonalized] = useState(false);
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+
+  // Backend status
+  const [backendAvailable, setBackendAvailable] = useState(null); // null=checking, true, false
+
+  // UI state
+  const [activeTab, setActiveTab] = useState('for-you');
+  const [sortBy, setSortBy] = useState('popular');
   const [minRating, setMinRating] = useState(0);
-
-  // Load movies from Supabase or local catalog on mount
-  useEffect(() => {
-    async function loadCatalog() {
-      const res = await fetchMoviesFromDb();
-      if (res && res.data && res.data.length > 0) {
-        setMovies(res.data);
-        setDataSource(res.source);
-      }
-    }
-    loadCatalog();
-  }, []);
-
-  // Modal States
   const [selectedMovie, setSelectedMovie] = useState(null);
   const [isTasteProfileOpen, setIsTasteProfileOpen] = useState(false);
   const [isQuickRateOpen, setIsQuickRateOpen] = useState(false);
-  const [isSupabaseConfigOpen, setIsSupabaseConfigOpen] = useState(false);
-  const [isMLInsightsOpen, setIsMLInsightsOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Save ratings to LocalStorage
+  const searchDebounceRef = useRef(null);
+  const recsDebounceRef = useRef(null);
+
+  // Persist ratings to localStorage
   useEffect(() => {
-    localStorage.setItem('cinematch_ratings', JSON.stringify(userRatings));
-  }, [userRatings]);
+    localStorage.setItem(ratingsKey, JSON.stringify(userRatings));
+  }, [userRatings, ratingsKey]);
 
-  // Compute Collaborative Filtering Recommended Movies
-  const scoredMovies = useMemo(() => {
-    return generatePersonalizedRecommendations(userRatings, movies, selectedGenres);
-  }, [userRatings, movies, selectedGenres]);
+  useEffect(() => {
+    localStorage.setItem(ratedCacheKey, JSON.stringify(ratedMoviesCache));
+  }, [ratedMoviesCache, ratedCacheKey]);
 
-  // Rate Movie Handler
-  const handleRateMovie = async (movieId, rating) => {
-    setUserRatings((prev) => {
-      const updated = { ...prev, [movieId]: rating };
-      return updated;
-    });
+  // Check backend health on mount
+  useEffect(() => {
+    checkHealth().then(ok => setBackendAvailable(ok));
+  }, []);
 
-    const targetMovie = movies.find(m => m.id === movieId);
-    const movieTitle = targetMovie ? targetMovie.title : 'Movie';
-    showToast(`Rated ${movieTitle} ${rating}★ — Collaborative vectors updated!`);
-
-    // Sync to Supabase in background
-    try {
-      await syncRatingToSupabase('default_user', movieId, rating);
-    } catch (e) {
-      console.warn('Supabase rating sync skipped/local mode:', e);
+  // Load catalog on mount and when tab/sort/genre changes
+  useEffect(() => {
+    if (activeTab === 'all' || activeTab === 'top-rated') {
+      loadCatalog(1);
     }
-  };
+  }, [activeTab, sortBy]);
+
+  // Fetch recommendations when ratings change or user opens "For You" tab
+  useEffect(() => {
+    if (activeTab !== 'for-you') return;
+    clearTimeout(recsDebounceRef.current);
+    recsDebounceRef.current = setTimeout(() => {
+      loadRecommendations();
+    }, 400);
+    return () => clearTimeout(recsDebounceRef.current);
+  }, [userRatings, selectedGenres, activeTab]);
+
+  // Load initial catalog for QuickRate (needs movies to rate)
+  useEffect(() => {
+    if (catalogMovies.length === 0) {
+      loadCatalog(1);
+    }
+  }, []);
+
+  // Debounced search
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+    clearTimeout(searchDebounceRef.current);
+    setSearchLoading(true);
+    searchDebounceRef.current = setTimeout(async () => {
+      const { data } = await searchMovies(searchQuery, 40);
+      setSearchResults(data?.movies || []);
+      setSearchLoading(false);
+    }, 350);
+    return () => clearTimeout(searchDebounceRef.current);
+  }, [searchQuery]);
+
+  async function loadCatalog(page = 1) {
+    setCatalogLoading(true);
+    const sort = activeTab === 'top-rated' ? 'rating' : (sortBy || 'popular');
+    const { data, error } = await fetchMovies({ page, limit: 60, sort });
+    if (error) {
+      setCatalogLoading(false);
+      return;
+    }
+    if (page === 1) {
+      setCatalogMovies(data.movies);
+    } else {
+      setCatalogMovies(prev => [...prev, ...data.movies]);
+    }
+    setCatalogPage(page);
+    setCatalogTotal(data.total);
+    setCatalogLoading(false);
+  }
+
+  async function loadRecommendations() {
+    setRecsLoading(true);
+    const activeGenres = (selectedGenres || []).filter(g => g !== '__all__' && g !== 'All');
+    const { data, error } = await getRecommendations(
+      userRatings,
+      30,
+      activeGenres.length > 0 ? activeGenres : null
+    );
+    if (!error && data) {
+      setRecommendations(data.recommendations || []);
+      setRecsPersonalized(data.is_personalized || false);
+    }
+    setRecsLoading(false);
+  }
+
+  const handleRateMovie = useCallback(async (movieId, rating, movieObject) => {
+    setUserRatings(prev => ({ ...prev, [movieId]: rating }));
+
+    // Cache movie object for My Ratings tab
+    if (movieObject) {
+      setRatedMoviesCache(prev => ({ ...prev, [movieId]: movieObject }));
+    }
+
+    const title = movieObject?.title || `Movie #${movieId}`;
+    showToast(`Rated "${title}" ${rating}★`);
+
+    // Sync to backend (fire-and-forget)
+    postRating(user.id, movieId, rating).catch(() => {});
+    syncRatingToSupabase(user.id, movieId, rating).catch(() => {});
+  }, [user.id]);
 
   const handleResetRatings = () => {
     setUserRatings({});
-    localStorage.removeItem('cinematch_ratings');
-    showToast('Reset all ratings to fresh state.');
+    setRatedMoviesCache({});
+    localStorage.removeItem(ratingsKey);
+    localStorage.removeItem(ratedCacheKey);
+    setRecommendations([]);
+    showToast('All ratings reset.');
   };
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage((current) => (current === msg ? null : current));
-    }, 3200);
+    setTimeout(() => setToastMessage(c => c === msg ? null : c), 3000);
   };
-
-  // Filter and Sort Movies based on current tab and user controls
-  const displayedMovies = useMemo(() => {
-    let list = [...scoredMovies];
-
-    // Filter by Tab
-    if (activeTab === 'for-you') {
-      list = list.sort((a, b) => (b.matchPercentage || 0) - (a.matchPercentage || 0));
-    } else if (activeTab === 'top-rated') {
-      list = list.sort((a, b) => b.rating - a.rating);
-    } else if (activeTab === 'my-ratings') {
-      list = list.filter(m => userRatings[m.id] !== undefined);
-    }
-
-    // Filter by Search Query
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(m =>
-        m.title.toLowerCase().includes(q) ||
-        m.director.toLowerCase().includes(q) ||
-        m.genres.some(g => g.toLowerCase().includes(q)) ||
-        (m.cast && m.cast.some(c => c.toLowerCase().includes(q)))
-      );
-    }
-
-    // Filter by user-preferred genres (from FilterBar toggle — separate from onboarding)
-    // '__all__' sentinel means user skipped genre selection
-    if (
-      selectedGenres &&
-      selectedGenres.length > 0 &&
-      !selectedGenres.includes('All') &&
-      !selectedGenres.includes('__all__')
-    ) {
-      list = list.filter(m => m.genres.some(g => selectedGenres.includes(g)));
-    }
-
-    // Filter by Min Rating
-    if (minRating > 0) {
-      list = list.filter(m => m.rating >= minRating);
-    }
-
-    // Secondary Sort override if specified
-    if (sortBy === 'rating') {
-      list.sort((a, b) => b.rating - a.rating);
-    } else if (sortBy === 'year_desc') {
-      list.sort((a, b) => b.year - a.year);
-    } else if (sortBy === 'year_asc') {
-      list.sort((a, b) => a.year - b.year);
-    } else if (sortBy === 'title') {
-      list.sort((a, b) => a.title.localeCompare(b.title));
-    } else if (sortBy === 'match') {
-      list.sort((a, b) => (b.matchPercentage || 0) - (a.matchPercentage || 0));
-    }
-
-    return list;
-  }, [scoredMovies, activeTab, searchQuery, selectedGenres, minRating, sortBy, userRatings]);
-
-  // Featured hero movie is the top collaborative match
-  const heroMovie = useMemo(() => {
-    return scoredMovies.find(m => m.featured) || scoredMovies[0];
-  }, [scoredMovies]);
 
   const ratedCount = Object.keys(userRatings).length;
 
+  // --- Derive displayed movie list based on active tab ---
+  const displayedMovies = useMemo(() => {
+    if (searchQuery.trim()) return searchResults;
+
+    if (activeTab === 'for-you') {
+      let list = [...recommendations];
+      if (minRating > 0) list = list.filter(m => (m.rating || 0) >= minRating);
+      return list;
+    }
+
+    if (activeTab === 'my-ratings') {
+      return Object.entries(ratedMoviesCache)
+        .filter(([id]) => userRatings[id] !== undefined)
+        .map(([id, m]) => ({ ...m, userRating: userRatings[id] }));
+    }
+
+    // 'all' or 'top-rated'
+    let list = [...catalogMovies];
+    const activeGenres = (selectedGenres || []).filter(g => g !== '__all__' && g !== 'All');
+    if (activeGenres.length > 0) {
+      list = list.filter(m => m.genres?.some(g => activeGenres.includes(g)));
+    }
+    if (minRating > 0) {
+      list = list.filter(m => (m.rating || 0) >= minRating);
+    }
+    if (activeTab === 'top-rated') {
+      list.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    }
+    return list;
+  }, [activeTab, recommendations, catalogMovies, searchQuery, searchResults, selectedGenres, minRating, userRatings, ratedMoviesCache]);
+
+  const isLoading = (activeTab === 'for-you' && recsLoading) ||
+    (['all', 'top-rated'].includes(activeTab) && catalogLoading && catalogMovies.length === 0) ||
+    (searchQuery && searchLoading);
+
+  // ------------------------------------------------------------------ render
+
   return (
     <div className="app-container">
-      {/* Genre Selection Modal — shown ONCE for brand-new users only */}
-      {(selectedGenres.length === 0) && (
+      {selectedGenres.length === 0 && (
         <GenreSelection
           onSave={(selected) => {
             if (selected.length > 0) {
-              localStorage.setItem('cinematch_user_genres', JSON.stringify(selected));
+              localStorage.setItem(genreKey, JSON.stringify(selected));
               setSelectedGenres(selected);
             } else {
-              // User clicked "Skip" — store sentinel so modal never shows again
-              localStorage.setItem('cinematch_user_genres', 'dismissed');
+              localStorage.setItem(genreKey, 'dismissed');
               setSelectedGenres(['__all__']);
             }
           }}
         />
       )}
 
-      {/* Navbar — always rendered so layout is intact beneath modal */}
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -195,56 +251,45 @@ export default function App() {
         setSearchQuery={setSearchQuery}
         ratedCount={ratedCount}
         onOpenTasteProfile={() => setIsTasteProfileOpen(true)}
-        onOpenSupabaseConfig={() => setIsSupabaseConfigOpen(true)}
         onOpenQuickRate={() => setIsQuickRateOpen(true)}
-        onOpenMLInsights={() => setIsMLInsightsOpen(true)}
+        backendAvailable={backendAvailable}
+        onLogout={logout}
       />
 
       <main className="main-content">
-        {/* Hero Spotlight (shown on 'For You' tab when no search query is active) */}
-        {activeTab === 'for-you' && !searchQuery && heroMovie && (
-          <HeroBanner
-            movie={heroMovie}
-            onSelectMovie={setSelectedMovie}
-            onRateMovie={handleRateMovie}
-            userRating={userRatings[heroMovie.id]}
-          />
+        {/* Backend unavailable warning */}
+        {backendAvailable === false && (
+          <div className="backend-warning">
+            <AlertCircle size={16} />
+            <span>
+              ML backend offline. Start it with:{' '}
+              <code>venv/bin/uvicorn ml.app:app --port 8000</code>
+            </span>
+          </div>
         )}
 
-        {/* Calibration Banner for Cold-Start / New Users */}
-        {ratedCount < 3 && (
+        {/* Cold-start calibration banner */}
+        {ratedCount < 5 && activeTab === 'for-you' && !searchQuery && (
           <div className="calibration-banner">
             <div className="calibration-info">
-              <div style={{
-                background: 'rgba(79, 70, 229, 0.2)',
-                padding: '0.5rem',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <Sparkles size={18} color="#818cf8" />
-              </div>
+              <div className="calibration-icon"><Sparkles size={18} /></div>
               <div>
-                <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#ffffff' }}>
-                  Calibrate Your Collaborative Filtering Recommendations
+                <div className="calibration-title">
+                  Rate {Math.max(0, 5 - ratedCount)} more movie{5 - ratedCount !== 1 ? 's' : ''} for personalized SVD recommendations
                 </div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                  Rate {3 - ratedCount} more movie{3 - ratedCount > 1 ? 's' : ''} to unlock high-precision taste vectors.
+                <div className="calibration-sub">
+                  {ratedCount === 0
+                    ? 'Currently showing popular movies. Rate to personalize.'
+                    : `${ratedCount}/5 rated — getting closer to personalized picks.`}
                 </div>
               </div>
             </div>
-
-            <button
-              className="btn btn-primary"
-              style={{ fontSize: '0.82rem', padding: '0.45rem 0.9rem' }}
-              onClick={() => setIsQuickRateOpen(true)}
-            >
-              Start Quick Calibration
+            <button className="btn btn-primary" onClick={() => setIsQuickRateOpen(true)}>
+              Quick Rate
             </button>
           </div>
         )}
 
-        {/* Filter and Sorting Toolbar */}
         <FilterBar
           selectedGenres={selectedGenres}
           setSelectedGenres={setSelectedGenres}
@@ -252,104 +297,117 @@ export default function App() {
           setSortBy={setSortBy}
           minRating={minRating}
           setMinRating={setMinRating}
+          showSortBy={activeTab !== 'for-you' && activeTab !== 'top-rated'}
         />
 
-        {/* Section Header */}
+        {/* Section header */}
         <div className="section-header">
           <div>
             <h2 className="section-title">
-              {activeTab === 'for-you' && (
-                <>
-                  <Sparkles size={20} color="#818cf8" />
-                  <span>Personalized Recommendations</span>
-                </>
-              )}
-              {activeTab === 'top-rated' && (
-                <>
-                  <Film size={20} color="#f59e0b" />
-                  <span>Critically Acclaimed & Top Rated</span>
-                </>
-              )}
-              {activeTab === 'all' && (
-                <>
-                  <Film size={20} color="#60a5fa" />
-                  <span>Complete Movie Catalog</span>
-                </>
-              )}
-              {activeTab === 'my-ratings' && (
-                <>
-                  <Star size={20} color="#f59e0b" fill="#f59e0b" />
-                  <span>Your Rated Movies ({ratedCount})</span>
-                </>
+              {searchQuery ? (
+                <><Film size={20} /><span>Search: "{searchQuery}"</span></>
+              ) : activeTab === 'for-you' ? (
+                <><Sparkles size={20} /><span>For You</span></>
+              ) : activeTab === 'top-rated' ? (
+                <><Star size={20} /><span>Top Rated</span></>
+              ) : activeTab === 'my-ratings' ? (
+                <><Star size={20} fill="currentColor" /><span>My Ratings ({ratedCount})</span></>
+              ) : (
+                <><Film size={20} /><span>Browse Catalog</span></>
               )}
             </h2>
             <p className="section-subtitle">
-              {activeTab === 'for-you' && 'Ranked dynamically using Item-Item similarity and Collaborative community vectors'}
-              {activeTab === 'top-rated' && 'Highest rated cinema masterpieces across global audiences'}
-              {activeTab === 'all' && `Browsing ${displayedMovies.length} movies with active filters`}
-              {activeTab === 'my-ratings' && 'Your explicit feedback used to train the recommendation engine'}
+              {searchQuery
+                ? `${displayedMovies.length} result${displayedMovies.length !== 1 ? 's' : ''} for "${searchQuery}"`
+                : activeTab === 'for-you' && recsPersonalized
+                  ? `SVD latent factor recommendations — ${ratedCount} rated movie${ratedCount !== 1 ? 's' : ''} used`
+                  : activeTab === 'for-you' && !recsPersonalized
+                    ? 'Showing popular picks — rate movies to personalize'
+                    : activeTab === 'top-rated'
+                      ? 'Sorted by community average rating'
+                      : activeTab === 'my-ratings'
+                        ? 'Your ratings history'
+                        : `${catalogTotal.toLocaleString()} movies in catalog`}
             </p>
           </div>
+
+          {activeTab === 'for-you' && ratedCount >= 5 && (
+            <button
+              className="btn btn-secondary"
+              style={{ fontSize: '0.78rem' }}
+              onClick={loadRecommendations}
+              disabled={recsLoading}
+            >
+              <RefreshCw size={13} className={recsLoading ? 'spin' : ''} />
+              Refresh
+            </button>
+          )}
         </div>
 
-        {/* Movie Grid */}
-        {displayedMovies.length > 0 ? (
-          <div className="movie-grid">
-            {displayedMovies.map((movie) => (
-              <MovieCard
-                key={movie.id}
-                movie={movie}
-                onSelectMovie={setSelectedMovie}
-                onRateMovie={handleRateMovie}
-                userRating={userRatings[movie.id]}
-              />
-            ))}
+        {/* Movie grid */}
+        {isLoading ? (
+          <div className="loading-state">
+            <Loader size={28} className="spin" />
+            <span>Loading…</span>
           </div>
+        ) : displayedMovies.length > 0 ? (
+          <>
+            <div className="movie-grid">
+              {displayedMovies.map((movie) => (
+                <MovieCard
+                  key={movie.id}
+                  movie={movie}
+                  onSelectMovie={setSelectedMovie}
+                  onRateMovie={handleRateMovie}
+                  userRating={userRatings[movie.id]}
+                />
+              ))}
+            </div>
+
+            {/* Load more for catalog tabs */}
+            {(activeTab === 'all') && catalogMovies.length < catalogTotal && (
+              <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => loadCatalog(catalogPage + 1)}
+                  disabled={catalogLoading}
+                >
+                  {catalogLoading ? 'Loading…' : `Load more (${catalogTotal - catalogMovies.length} remaining)`}
+                </button>
+              </div>
+            )}
+          </>
         ) : (
-          <div style={{
-            background: 'var(--bg-secondary)',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '12px',
-            padding: '3rem 2rem',
-            textAlign: 'center',
-            marginTop: '1.5rem'
-          }}>
-            <Film size={36} color="#6b7280" style={{ marginBottom: '0.85rem' }} />
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: '#ffffff', marginBottom: '0.35rem' }}>
-              No movies matched your current criteria
-            </h3>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+          <div className="empty-state">
+            <Film size={36} />
+            <h3>
               {activeTab === 'my-ratings'
-                ? "You haven't rated any movies yet. Explore the catalog or click 'Calibrate Taste' to start!"
-                : 'Try adjusting your genre filters or search query.'}
+                ? "No ratings yet"
+                : backendAvailable === false
+                  ? "ML backend offline"
+                  : "No movies found"}
+            </h3>
+            <p>
+              {activeTab === 'my-ratings'
+                ? "Rate movies to see your history here."
+                : backendAvailable === false
+                  ? "Start the backend: venv/bin/uvicorn ml.app:app --port 8000"
+                  : "Try adjusting your filters or search query."}
             </p>
-            {activeTab === 'my-ratings' ? (
+            {activeTab === 'my-ratings' && (
               <button className="btn btn-primary" onClick={() => setIsQuickRateOpen(true)}>
-                Rate Movies Now
-              </button>
-            ) : (
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setSelectedGenres(['__all__']);
-                  setSearchQuery('');
-                  setMinRating(0);
-                }}
-              >
-                Reset Filters
+                Rate Movies
               </button>
             )}
           </div>
         )}
       </main>
 
-      {/* Modals */}
       {selectedMovie && (
         <MovieDetailsModal
           movie={selectedMovie}
-          allMovies={movies}
           onClose={() => setSelectedMovie(null)}
-          onSelectMovie={(movie) => setSelectedMovie(movie)}
+          onSelectMovie={setSelectedMovie}
           onRateMovie={handleRateMovie}
           userRating={userRatings[selectedMovie.id]}
         />
@@ -358,7 +416,7 @@ export default function App() {
       {isTasteProfileOpen && (
         <TasteProfileModal
           userRatings={userRatings}
-          allMovies={movies}
+          ratedMoviesCache={ratedMoviesCache}
           onClose={() => setIsTasteProfileOpen(false)}
           onResetRatings={handleResetRatings}
         />
@@ -366,30 +424,16 @@ export default function App() {
 
       {isQuickRateOpen && (
         <QuickRateDrawer
-          allMovies={movies}
+          catalogMovies={catalogMovies}
           userRatings={userRatings}
           onRateMovie={handleRateMovie}
           onClose={() => setIsQuickRateOpen(false)}
         />
       )}
 
-      {isSupabaseConfigOpen && (
-        <SupabaseConfigModal
-          onClose={() => setIsSupabaseConfigOpen(false)}
-          onConfigSaved={() => showToast('Supabase settings updated!')}
-        />
-      )}
-
-      {isMLInsightsOpen && (
-        <MLInsightsModal
-          onClose={() => setIsMLInsightsOpen(false)}
-        />
-      )}
-
-      {/* Toast Notification */}
       {toastMessage && (
         <div className="toast-toast">
-          <CheckCircle size={16} color="#10b981" />
+          <Star size={14} fill="#f59e0b" color="#f59e0b" />
           <span>{toastMessage}</span>
         </div>
       )}

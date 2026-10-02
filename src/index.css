@@ -437,10 +437,11 @@ h1, h2, h3, h4, .font-heading {
 .card-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  font-size: 0.78rem;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.5rem;
 }
 
 .card-genres {
@@ -1321,5 +1322,122 @@ h1, h2, h3, h4, .font-heading {
 .btn-genre-continue:hover {
   background: #e4e4e7;
   transform: scale(1.02);
+}
+
+/* ---- New classes for the data-driven UI ---- */
+
+/* Backend offline warning banner */
+.backend-warning {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  padding: 0.65rem 1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.82rem;
+  margin-bottom: 1rem;
+}
+
+.backend-warning code {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+}
+
+/* Movie card genre accent strip (replaces poster) */
+
+.card-genre-accent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.6rem 0.9rem 0.4rem;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255,255,255,0.02);
+  min-height: 2.4rem;
+}
+
+/* Predicted rating badge on card */
+.predicted-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: #a5b4fc;
+  background: rgba(79, 70, 229, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.5rem;
+  width: fit-content;
+}
+
+.rate-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.rated-label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #34d399;
+  font-weight: 600;
+}
+
+/* Loading and empty states */
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 4rem 2rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 4rem 2rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty-state h3 {
+  font-size: 1.1rem;
+  color: #fff;
+  margin-top: 0.5rem;
+}
+
+.empty-state p {
+  font-size: 0.85rem;
+  max-width: 360px;
+  margin-bottom: 1rem;
+}
+
+/* Spin animation */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Calibration progress box in QuickRateDrawer */
+.calibration-progress {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-md);
+  margin-bottom: 1rem;
 }
 

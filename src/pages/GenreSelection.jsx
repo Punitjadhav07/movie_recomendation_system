@@ -31,7 +31,6 @@ export default function GenreSelection({ onSave }) {
 
   const handleContinue = () => {
     const toSave = selected.length > 0 ? selected : ALL_GENRES.map(g => g.name);
-    localStorage.setItem('cinematch_user_genres', JSON.stringify(toSave));
     if (onSave) onSave(toSave);
   };
 
