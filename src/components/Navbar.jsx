@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, Star, User, Search, LogOut, Shield } from 'lucide-react';
+import { Film, Star, User, Search, LogOut } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Navbar({
@@ -13,7 +13,7 @@ export default function Navbar({
   backendAvailable,
   onLogout,
 }) {
-  const { user, role, logout: ctxLogout } = useAuth();
+  const { user, logout: ctxLogout } = useAuth();
   const logout = onLogout || ctxLogout;
 
   return (
@@ -87,26 +87,10 @@ export default function Navbar({
           </button>
         </div>
 
-        {/* User Status / Role Pill */}
+        {/* User Status */}
         {user && (
           <div className="navbar-user-chip">
-            <div className="user-role-indicator">
-              {role === 'admin' ? (
-                <span className="badge-role admin"><Shield size={12} /> Admin</span>
-              ) : (
-                <span className="badge-role user"><User size={12} /> User</span>
-              )}
-            </div>
-            {role === 'admin' && (
-              <button
-                className="btn-admin-link"
-                onClick={() => { window.location.hash = '#admin'; }}
-                title="Admin Panel"
-              >
-                <Shield size={12} /> Admin
-              </button>
-            )}
-            <span className="user-name-label">{user.username || user.name || 'Account'}</span>
+            <span className="badge-role user"><User size={12} /> {user.username || user.name || 'Account'}</span>
             <button className="btn-logout-icon" onClick={logout} title="Sign out of account">
               <LogOut size={14} />
             </button>

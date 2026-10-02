@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { getSupabase } from '../services/supabaseClient';
+import { loginApi, registerApi, logoutApi } from '../services/mlApi';
 
 const AuthContext = createContext(null);
 
@@ -14,12 +15,10 @@ export const AuthProvider = ({ children }) => {
     return saved ? JSON.parse(saved) : null;
   });
   const [role, setRole] = useState(() => {
-    const saved = localStorage.getItem('cinematch_auth_role');
-    return saved || null;
+    return localStorage.getItem('cinematch_auth_role') || null;
   });
-  const [registeredUsers, setRegisteredUsers] = useState(() => {
-    const saved = localStorage.getItem('cinematch_custom_users');
-    return saved ? JSON.parse(saved) : {};
+  const [authToken, setAuthToken] = useState(() => {
+    return localStorage.getItem('cinematch_auth_token') || null;
   });
 
   const supabase = getSupabase();
@@ -27,7 +26,6 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     if (!supabase) return;
 
-    // Supabase session listener (for Google OAuth or direct Supabase logins)
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         const u = session.user;
@@ -69,11 +67,39 @@ export const AuthProvider = ({ children }) => {
     };
   }, [supabase]);
 
-  // Handle local credentials login or Supabase login
   const loginWithCredentials = async (username, password) => {
     const uname = username.trim().toLowerCase();
-    
-    // Check built-in preset accounts first
+
+    // Try backend authentication first (backend determines role)
+    const { data, error } = await loginApi(uname, password);
+
+    if (data && !error) {
+      const userData = {
+        id: data.user_id,
+        username: data.username,
+        email: `${data.username}@cinematch.ai`,
+        name: data.name,
+      };
+      setUser(userData);
+      setRole(data.role);
+      setAuthToken(data.token);
+      localStorage.setItem('cinematch_auth_user', JSON.stringify(userData));
+      localStorage.setItem('cinematch_auth_role', data.role);
+      localStorage.setItem('cinematch_auth_token', data.token);
+
+      if (data.role === 'admin') {
+        window.location.hash = '#admin';
+      }
+
+      return { success: true };
+    }
+
+    // If backend returned a real auth error (not a connection failure), show it
+    if (error && !error.includes('unavailable') && !error.includes('Start it with')) {
+      return { success: false, error };
+    }
+
+    // Backend unreachable — fall back to client-side preset check (offline demo mode)
     if (DEFAULT_ACCOUNTS[uname]) {
       if (DEFAULT_ACCOUNTS[uname].password === password) {
         const userData = {
@@ -85,31 +111,18 @@ export const AuthProvider = ({ children }) => {
         const userRole = DEFAULT_ACCOUNTS[uname].role;
         setUser(userData);
         setRole(userRole);
+        setAuthToken(null);
         localStorage.setItem('cinematch_auth_user', JSON.stringify(userData));
         localStorage.setItem('cinematch_auth_role', userRole);
+        localStorage.removeItem('cinematch_auth_token');
+
+        if (userRole === 'admin') {
+          window.location.hash = '#admin';
+        }
+
         return { success: true };
       } else {
         return { success: false, error: 'Incorrect password for ' + uname };
-      }
-    }
-
-    // Check newly registered custom users
-    if (registeredUsers[uname]) {
-      if (registeredUsers[uname].password === password) {
-        const userData = {
-          id: `user_${uname}`,
-          username: uname,
-          email: `${uname}@cinematch.ai`,
-          name: registeredUsers[uname].name || uname
-        };
-        const userRole = registeredUsers[uname].role || 'user';
-        setUser(userData);
-        setRole(userRole);
-        localStorage.setItem('cinematch_auth_user', JSON.stringify(userData));
-        localStorage.setItem('cinematch_auth_role', userRole);
-        return { success: true };
-      } else {
-        return { success: false, error: 'Incorrect password' };
       }
     }
 
@@ -117,9 +130,9 @@ export const AuthProvider = ({ children }) => {
     if (supabase) {
       try {
         const email = uname.includes('@') ? uname : `${uname}@cinematch.ai`;
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (!error && data?.user) {
-          const u = data.user;
+        const { data: sData, error: sError } = await supabase.auth.signInWithPassword({ email, password });
+        if (!sError && sData?.user) {
+          const u = sData.user;
           const userRole = (u.email || '').includes('admin') ? 'admin' : 'user';
           const userData = {
             id: u.id,
@@ -140,25 +153,54 @@ export const AuthProvider = ({ children }) => {
     return { success: false, error: 'Invalid username or password. Use user1/password@123 or admin/admin@123' };
   };
 
-  // Handle Signup
   const signupWithCredentials = async (username, password) => {
     const uname = username.trim().toLowerCase();
-    if (DEFAULT_ACCOUNTS[uname] || registeredUsers[uname]) {
+
+    // Try backend registration first
+    const { data, error } = await registerApi(uname, password);
+
+    if (data && !error) {
+      const userData = {
+        id: data.user_id,
+        username: data.username,
+        email: `${data.username}@cinematch.ai`,
+        name: data.name,
+      };
+      setUser(userData);
+      setRole(data.role); // Always 'user' from backend
+      setAuthToken(data.token);
+      localStorage.setItem('cinematch_auth_user', JSON.stringify(userData));
+      localStorage.setItem('cinematch_auth_role', data.role);
+      localStorage.setItem('cinematch_auth_token', data.token);
+      localStorage.removeItem('cinematch_user_genres');
+      return { success: true, isNewUser: true };
+    }
+
+    // If backend returned a real error (not connection), show it
+    if (error && !error.includes('unavailable') && !error.includes('Start it with')) {
+      return { success: false, error };
+    }
+
+    // Backend unreachable — fall back to client-side registration (offline demo)
+    if (DEFAULT_ACCOUNTS[uname]) {
+      return { success: false, error: 'Username already exists' };
+    }
+
+    const registeredUsers = JSON.parse(localStorage.getItem('cinematch_custom_users') || '{}');
+    if (registeredUsers[uname]) {
       return { success: false, error: 'Username already exists' };
     }
 
     const newUser = {
       username: uname,
       password: password,
-      role: uname.startsWith('admin') ? 'admin' : 'user',
+      role: 'user', // Always user — only backend admin can change roles
       createdAt: new Date().toISOString()
     };
 
     const updated = { ...registeredUsers, [uname]: newUser };
-    setRegisteredUsers(updated);
     localStorage.setItem('cinematch_custom_users', JSON.stringify(updated));
 
-    // Automatically log in
     const userData = {
       id: `user_${uname}`,
       username: uname,
@@ -166,10 +208,11 @@ export const AuthProvider = ({ children }) => {
       name: uname
     };
     setUser(userData);
-    setRole(newUser.role);
+    setRole('user');
+    setAuthToken(null);
     localStorage.setItem('cinematch_auth_user', JSON.stringify(userData));
-    localStorage.setItem('cinematch_auth_role', newUser.role);
-    // Clear genre prefs so genre-selection modal shows for this new user
+    localStorage.setItem('cinematch_auth_role', 'user');
+    localStorage.removeItem('cinematch_auth_token');
     localStorage.removeItem('cinematch_user_genres');
 
     return { success: true, isNewUser: true };
@@ -188,7 +231,6 @@ export const AuthProvider = ({ children }) => {
         if (error) throw error;
       } catch (err) {
         console.error('Google Sign-In Error:', err);
-        // Fallback mock google user for local demo if OAuth keys aren't set in Supabase dashboard
         const mockGoogleUser = {
           id: 'google_user_demo',
           username: 'Google User',
@@ -201,7 +243,6 @@ export const AuthProvider = ({ children }) => {
         localStorage.setItem('cinematch_auth_role', 'user');
       }
     } else {
-      // Mock Google sign in
       const mockGoogleUser = {
         id: 'google_user_demo',
         username: 'Google User',
@@ -216,15 +257,18 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
+    if (authToken) {
+      logoutApi(authToken).catch(() => {});
+    }
     if (supabase) {
-      try {
-        await supabase.auth.signOut();
-      } catch (e) {}
+      try { await supabase.auth.signOut(); } catch (e) {}
     }
     setUser(null);
     setRole(null);
+    setAuthToken(null);
     localStorage.removeItem('cinematch_auth_user');
     localStorage.removeItem('cinematch_auth_role');
+    localStorage.removeItem('cinematch_auth_token');
   };
 
   return (
@@ -232,6 +276,7 @@ export const AuthProvider = ({ children }) => {
       value={{
         user,
         role,
+        authToken,
         loginWithCredentials,
         signupWithCredentials,
         loginWithGoogle,

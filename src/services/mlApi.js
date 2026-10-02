@@ -2,7 +2,7 @@
  * CineMatch ML API client.
  * Communicates with the FastAPI backend at VITE_ML_API_URL (default: http://localhost:8000).
  *
- * All functions return {data, error} — never throw.
+ * All functions return {data, error} -- never throw.
  */
 
 const BASE = (import.meta.env.VITE_ML_API_URL || 'http://localhost:8000').replace(/\/$/, '');
@@ -22,6 +22,55 @@ async function req(path, options = {}) {
     return { data: null, error: 'ML backend unavailable. Start it with: venv/bin/uvicorn ml.app:app --port 8000' };
   }
 }
+
+async function adminReq(path, token, options = {}) {
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      ...options
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return { data: null, error: body.detail || `HTTP ${res.status}` };
+    }
+    return { data: await res.json(), error: null };
+  } catch (err) {
+    return { data: null, error: 'ML backend unavailable.' };
+  }
+}
+
+// --- Auth ---
+
+/** Login with username/password. Returns {token, user_id, role, name}. */
+export async function loginApi(username, password) {
+  return req('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password })
+  });
+}
+
+/** Register a new user. Returns {token, user_id, role, name}. */
+export async function registerApi(username, password) {
+  return req('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password })
+  });
+}
+
+/** Verify a session token is still valid. */
+export async function verifyToken(token) {
+  return adminReq('/auth/verify', token);
+}
+
+/** Invalidate a session token. */
+export async function logoutApi(token) {
+  return adminReq('/auth/logout', token, { method: 'POST' });
+}
+
+// --- Public ---
 
 /** Check if the backend is reachable. Returns true/false. */
 export async function checkHealth() {
@@ -88,21 +137,28 @@ export async function fetchHealth() {
   return req('/health');
 }
 
-/** Fetch admin dashboard stats. Requires admin API key. */
-export async function fetchAdminStats(adminKey) {
-  try {
-    const res = await fetch(`${BASE}/admin/stats`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Admin-Key': adminKey || '',
-      },
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      return { data: null, error: body.detail || `HTTP ${res.status}` };
-    }
-    return { data: await res.json(), error: null };
-  } catch (err) {
-    return { data: null, error: 'ML backend unavailable.' };
-  }
+// --- Admin (token-authenticated) ---
+
+/** Fetch admin dashboard stats. Requires admin session token. */
+export async function fetchAdminStats(token) {
+  return adminReq('/admin/stats', token);
+}
+
+/** Fetch admin user list. */
+export async function fetchAdminUsers(token, search = '') {
+  const params = search ? `?search=${encodeURIComponent(search)}` : '';
+  return adminReq(`/admin/users${params}`, token);
+}
+
+/** Fetch detailed info for a single user. */
+export async function fetchAdminUserDetail(token, userId) {
+  return adminReq(`/admin/users/${encodeURIComponent(userId)}`, token);
+}
+
+/** Change a user's role. */
+export async function changeUserRole(token, userId, role) {
+  return adminReq(`/admin/users/${encodeURIComponent(userId)}/role`, token, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  });
 }

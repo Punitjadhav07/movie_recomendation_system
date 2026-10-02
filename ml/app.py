@@ -6,29 +6,41 @@ Run from project root:
   venv/bin/uvicorn ml.app:app --host 0.0.0.0 --port 8000 --reload
 
 Endpoints:
+  # Auth
+  POST /auth/login                body: {username, password}
+  POST /auth/register             body: {username, password}
+  GET  /auth/verify               header: Authorization: Bearer <token>
+  POST /auth/logout               header: Authorization: Bearer <token>
+
+  # Public
   GET  /health
   GET  /movies?page=1&limit=50&genre=Action&sort=popular
   GET  /movies/search?q=jumanji&limit=20
   GET  /movies/{movie_id}
-  POST /ratings                  body: {user_id, movie_id, rating}
+  POST /ratings                   body: {user_id, movie_id, rating}
   GET  /ratings/{user_id}
-  POST /recommend                body: {ratings: {"296": 5.0, ...}, n: 10}
-  GET  /recommend/{user_id}?n=10 (for dataset users stored in processed_ratings.json)
+  POST /recommend                 body: {ratings: {"296": 5.0, ...}, n: 10}
+  GET  /recommend/{user_id}?n=10
   GET  /similar/{movie_id}?n=4
+
+  # Admin (requires admin session token)
+  GET  /admin/stats
+  GET  /admin/users?search=
+  GET  /admin/users/{user_id}
+  PATCH /admin/users/{user_id}/role  body: {role: "admin"|"user"}
 """
 
 import os
 import csv
 import json
 import re
+import secrets
 import numpy as np
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
-
-# Admin API key — set via environment variable. If unset, admin endpoints are disabled.
-ADMIN_API_KEY = os.environ.get("CINEMATCH_ADMIN_KEY", "")
 
 app = FastAPI(title="CineMatch Recommendation API", version="2.0.0")
 app.add_middleware(
@@ -50,6 +62,55 @@ model_meta: dict = {}
 user_ratings_store: Dict[str, Dict[int, float]] = {}
 # dataset users from processed_ratings.json (for GET /recommend/{user_id})
 dataset_user_ratings: Dict[str, Dict[int, float]] = {}
+
+# --- Auth system ---
+PRESET_ACCOUNTS = {
+    "admin": {"password": "admin@123", "role": "admin", "name": "System Administrator"},
+    "user1": {"password": "password@123", "role": "user", "name": "User 1"},
+}
+USERS_FILE = "data/app_users.json"
+app_users: Dict[str, dict] = {}
+active_sessions: Dict[str, dict] = {}
+
+
+def _load_app_users():
+    """Load registered app users from JSON file. Presets always exist."""
+    global app_users
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, encoding="utf-8") as f:
+                app_users = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            app_users = {}
+    for uname, data in PRESET_ACCOUNTS.items():
+        if uname not in app_users:
+            app_users[uname] = {**data, "created_at": "preset"}
+
+
+def _save_app_users():
+    """Persist app users to JSON file."""
+    try:
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(app_users, f, indent=2)
+    except IOError:
+        pass
+
+
+def _require_admin(authorization: Optional[str]) -> dict:
+    """Verify the request has a valid admin session token. Returns session dict."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+    session = active_sessions.get(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if session["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return session
+
+
+def _user_id_for(username: str) -> str:
+    return f"preset_{username}" if username in PRESET_ACCOUNTS else f"user_{username}"
 
 
 def _parse_year(raw_title: str) -> int:
@@ -139,6 +200,10 @@ def startup():
             dataset_user_ratings[uid][r["movie_id"]] = r["rating"]
         print(f"Dataset users: {len(dataset_user_ratings)} loaded")
 
+    # 6. Load app users
+    _load_app_users()
+    print(f"App users: {len(app_users)} loaded")
+
     print("CineMatch API ready.")
 
 
@@ -161,7 +226,6 @@ def _compute_recommendations(
     Cold start: if no ratings provided, return most-popular catalog movies.
     """
     if not user_ratings or len(movie_embeddings) == 0:
-        # Cold start: return most popular (by vote_count)
         popular = sorted(
             catalog_movies,
             key=lambda m: m.get("vote_count") or 0,
@@ -188,7 +252,6 @@ def _compute_recommendations(
         rated_count += 1
 
     if rated_count == 0 or np.linalg.norm(u_vec) == 0:
-        # All rated movies had no embeddings — fall back
         popular = sorted(catalog_movies, key=lambda m: m.get("vote_count") or 0, reverse=True)
         return {
             "algorithm": "popularity_fallback",
@@ -203,7 +266,7 @@ def _compute_recommendations(
     for m in catalog_movies:
         mid = m["id"]
         if mid in user_ratings:
-            continue  # exclude already-rated
+            continue
 
         emb = movie_embeddings.get(str(mid))
         if emb is None:
@@ -215,8 +278,6 @@ def _compute_recommendations(
             continue
 
         cosine = float(np.dot(u_norm, v) / v_norm_val)
-        # Honest approximation: map cosine [-1,1] to predicted_rating [1,5]
-        # We use 3.5 as the center (matches the training mean-centering)
         predicted_rating = round(max(1.0, min(5.0, 3.5 + cosine * 1.5)), 2)
 
         result = {**m, "predicted_rating": predicted_rating, "latent_score": round(cosine, 4)}
@@ -237,7 +298,91 @@ def _compute_recommendations(
     }
 
 
-# ------------------------------------------------------------------ routes
+# ------------------------------------------------------------------ auth routes
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterPayload(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/login")
+def auth_login(payload: LoginPayload):
+    """Authenticate with username/password. Returns session token and user info."""
+    uname = payload.username.strip().lower()
+    account = app_users.get(uname)
+    if not account or account["password"] != payload.password:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    token = secrets.token_hex(32)
+    user_id = _user_id_for(uname)
+    session = {
+        "user_id": user_id,
+        "username": uname,
+        "role": account["role"],
+        "name": account.get("name", uname),
+    }
+    active_sessions[token] = session
+    return {"token": token, **session}
+
+
+@app.post("/auth/register")
+def auth_register(payload: RegisterPayload):
+    """Register a new user account. Always assigns role=user."""
+    uname = payload.username.strip().lower()
+    if uname in app_users:
+        raise HTTPException(status_code=409, detail="Username already exists")
+    if len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if not uname or len(uname) < 2:
+        raise HTTPException(status_code=400, detail="Username must be at least 2 characters")
+
+    app_users[uname] = {
+        "password": payload.password,
+        "role": "user",
+        "name": uname,
+        "created_at": datetime.now().isoformat(),
+    }
+    _save_app_users()
+
+    token = secrets.token_hex(32)
+    user_id = _user_id_for(uname)
+    session = {
+        "user_id": user_id,
+        "username": uname,
+        "role": "user",
+        "name": uname,
+    }
+    active_sessions[token] = session
+    return {"token": token, **session}
+
+
+@app.get("/auth/verify")
+def auth_verify(authorization: str = Header(None)):
+    """Check if a session token is still valid. Returns session info."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="No token provided")
+    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+    session = active_sessions.get(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return session
+
+
+@app.post("/auth/logout")
+def auth_logout(authorization: str = Header(None)):
+    """Invalidate a session token."""
+    if authorization:
+        token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+        active_sessions.pop(token, None)
+    return {"success": True}
+
+
+# ------------------------------------------------------------------ public routes
 
 @app.get("/health")
 def health():
@@ -319,7 +464,7 @@ def get_movie(movie_id: int):
 class RatingPayload(BaseModel):
     user_id: str
     movie_id: int
-    rating: float  # 0.5 – 5.0
+    rating: float  # 0.5 - 5.0
 
 
 @app.post("/ratings")
@@ -381,18 +526,36 @@ def get_recommend_user(user_id: str, n: int = Query(10, ge=1, le=100)):
     return result
 
 
-def _verify_admin(key: str):
-    """Verify admin API key. Raises 403 if invalid or not configured."""
-    if not ADMIN_API_KEY:
-        raise HTTPException(status_code=503, detail="Admin API key not configured. Set CINEMATCH_ADMIN_KEY env var.")
-    if key != ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin API key.")
+@app.get("/similar/{movie_id}")
+def get_similar(movie_id: int, n: int = Query(4, ge=1, le=20)):
+    """Returns nearest neighbors in SVD latent space."""
+    sims = latent_sims.get(str(movie_id), [])
+    if not sims:
+        movie = all_movies_idx.get(movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
+        return {"movie_id": movie_id, "title": movie["title"], "similar": []}
 
+    results = []
+    for item in sims[:n]:
+        m = catalog_idx.get(item["movie_id"])
+        if m:
+            results.append({**m, "latent_similarity": item["similarity"]})
+
+    source = catalog_idx.get(movie_id) or all_movies_idx.get(movie_id)
+    return {
+        "movie_id": movie_id,
+        "title": source["title"] if source else str(movie_id),
+        "similar": results
+    }
+
+
+# ------------------------------------------------------------------ admin routes
 
 @app.get("/admin/stats")
-def admin_stats(x_admin_key: str = Header(None)):
-    """Real system statistics for the admin dashboard. Requires X-Admin-Key header."""
-    _verify_admin(x_admin_key)
+def admin_stats(authorization: str = Header(None)):
+    """Real system statistics for the admin dashboard. Requires admin session."""
+    _require_admin(authorization)
     from collections import Counter
 
     # Rating distribution from dataset
@@ -435,6 +598,9 @@ def admin_stats(x_admin_key: str = Header(None)):
                    "data/processed_ratings.json", "data/movie_stats.json"]:
         data_files[fname] = os.path.exists(fname)
 
+    # App user stats
+    admin_count = sum(1 for d in app_users.values() if d["role"] == "admin")
+
     return {
         "total_movies_csv": len(all_movies),
         "catalog_movies": len(catalog_movies),
@@ -443,6 +609,8 @@ def admin_stats(x_admin_key: str = Header(None)):
         "dataset_ratings": total_dataset_ratings,
         "session_users": len(user_ratings_store),
         "session_ratings": session_rating_count,
+        "app_users": len(app_users),
+        "admin_users": admin_count,
         "model": model_meta if model_meta else None,
         "evaluation": eval_metrics,
         "rating_distribution": dict(sorted(rating_dist.items())),
@@ -452,26 +620,144 @@ def admin_stats(x_admin_key: str = Header(None)):
     }
 
 
-@app.get("/similar/{movie_id}")
-def get_similar(movie_id: int, n: int = Query(4, ge=1, le=20)):
-    """Returns nearest neighbors in SVD latent space."""
-    sims = latent_sims.get(str(movie_id), [])
-    if not sims:
-        movie = all_movies_idx.get(movie_id)
-        if not movie:
-            raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
-        # No SVD embedding — return empty
-        return {"movie_id": movie_id, "title": movie["title"], "similar": []}
+@app.get("/admin/users")
+def admin_get_users(
+    authorization: str = Header(None),
+    search: str = Query(""),
+):
+    """List app users and session users. Requires admin session."""
+    _require_admin(authorization)
 
-    results = []
-    for item in sims[:n]:
-        m = catalog_idx.get(item["movie_id"])
-        if m:
-            results.append({**m, "latent_similarity": item["similarity"]})
+    search_lower = search.strip().lower()
+    users = []
 
-    source = catalog_idx.get(movie_id) or all_movies_idx.get(movie_id)
+    # App users (preset + registered)
+    for uname, data in app_users.items():
+        uid = _user_id_for(uname)
+        ratings = user_ratings_store.get(uid, {})
+        user_info = {
+            "user_id": uid,
+            "username": uname,
+            "role": data["role"],
+            "name": data.get("name", uname),
+            "created_at": data.get("created_at"),
+            "rating_count": len(ratings),
+            "avg_rating": round(sum(ratings.values()) / len(ratings), 2) if ratings else None,
+            "source": "preset" if uname in PRESET_ACCOUNTS else "registered",
+        }
+        if search_lower:
+            if search_lower not in uname.lower() and search_lower not in (data.get("name", "")).lower() and search_lower not in uid.lower():
+                continue
+        users.append(user_info)
+
+    # Session-only users (rated but not registered)
+    for uid, ratings in user_ratings_store.items():
+        if any(u["user_id"] == uid for u in users):
+            continue
+        user_info = {
+            "user_id": uid,
+            "username": uid,
+            "role": "user",
+            "name": uid,
+            "created_at": None,
+            "rating_count": len(ratings),
+            "avg_rating": round(sum(ratings.values()) / len(ratings), 2) if ratings else None,
+            "source": "session",
+        }
+        if search_lower and search_lower not in uid.lower():
+            continue
+        users.append(user_info)
+
+    # Stats
+    total_app = len(app_users)
+    admin_count = sum(1 for d in app_users.values() if d["role"] == "admin")
+    users_with_ratings = sum(1 for u in users if u["rating_count"] > 0)
+
     return {
-        "movie_id": movie_id,
-        "title": source["title"] if source else str(movie_id),
-        "similar": results
+        "users": users,
+        "stats": {
+            "total_app_users": total_app,
+            "admin_users": admin_count,
+            "normal_users": total_app - admin_count,
+            "session_users": len(user_ratings_store),
+            "dataset_users": len(dataset_user_ratings),
+            "users_with_ratings": users_with_ratings,
+            "users_without_ratings": len(users) - users_with_ratings,
+        }
     }
+
+
+@app.get("/admin/users/{user_id}")
+def admin_get_user_detail(user_id: str, authorization: str = Header(None)):
+    """Get detailed user info including rating history. Requires admin session."""
+    _require_admin(authorization)
+
+    # Find user account info
+    uname = user_id.replace("preset_", "").replace("user_", "")
+    account = app_users.get(uname)
+
+    # Get ratings (session first, then dataset)
+    ratings = user_ratings_store.get(user_id, {})
+    if not ratings:
+        ratings = dataset_user_ratings.get(user_id, {})
+
+    if not account and not ratings:
+        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
+
+    # Build rating history with movie titles
+    rating_history = []
+    for mid, r in ratings.items():
+        mid_int = int(mid) if isinstance(mid, str) else mid
+        movie = all_movies_idx.get(mid_int) or catalog_idx.get(mid_int)
+        rating_history.append({
+            "movie_id": mid_int,
+            "title": movie["title"] if movie else f"Movie #{mid_int}",
+            "rating": r,
+            "genres": movie.get("genres", []) if movie else [],
+        })
+    rating_history.sort(key=lambda x: x["rating"], reverse=True)
+
+    source = "dataset"
+    if account:
+        source = "preset" if uname in PRESET_ACCOUNTS else "registered"
+    elif user_id in user_ratings_store:
+        source = "session"
+
+    return {
+        "user_id": user_id,
+        "username": uname if account else user_id,
+        "role": account["role"] if account else "user",
+        "name": account.get("name", uname) if account else user_id,
+        "created_at": account.get("created_at") if account else None,
+        "source": source,
+        "rating_count": len(ratings),
+        "avg_rating": round(sum(ratings.values()) / len(ratings), 2) if ratings else None,
+        "ratings": rating_history,
+    }
+
+
+class RoleChangePayload(BaseModel):
+    role: str
+
+
+@app.patch("/admin/users/{user_id}/role")
+def admin_change_role(user_id: str, payload: RoleChangePayload, authorization: str = Header(None)):
+    """Change a user's role. Only works for app users (preset/registered). Requires admin session."""
+    _require_admin(authorization)
+
+    if payload.role not in ("user", "admin"):
+        raise HTTPException(status_code=400, detail="Role must be 'user' or 'admin'")
+
+    uname = user_id.replace("preset_", "").replace("user_", "")
+    if uname not in app_users:
+        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found in app accounts")
+
+    app_users[uname]["role"] = payload.role
+    _save_app_users()
+
+    # Update any active sessions for this user
+    for token, session in active_sessions.items():
+        if session["user_id"] == user_id:
+            session["role"] = payload.role
+
+    return {"success": True, "user_id": user_id, "new_role": payload.role}

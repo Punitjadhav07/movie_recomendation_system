@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { fetchAdminStats, fetchHealth, searchMovies } from '../services/mlApi';
+import { useAuth } from '../context/AuthContext';
+import {
+  fetchAdminStats, fetchHealth, searchMovies,
+  fetchAdminUsers, fetchAdminUserDetail, changeUserRole
+} from '../services/mlApi';
 import {
   LayoutDashboard, Database, Brain, BarChart3, Film, Activity,
-  RefreshCw, Search, ChevronRight, AlertTriangle, CheckCircle,
-  XCircle, ArrowLeft, Star, Users, Hash, Clock, Loader
+  RefreshCw, Search, AlertTriangle, CheckCircle,
+  XCircle, ArrowLeft, Star, Users, Hash, Clock, Loader,
+  User, ChevronLeft, Shield
 } from 'lucide-react';
 
 const TABS = [
@@ -11,6 +16,7 @@ const TABS = [
   { id: 'dataset', label: 'Dataset', icon: Database },
   { id: 'engine', label: 'Rec Engine', icon: Brain },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+  { id: 'users', label: 'Users', icon: Users },
   { id: 'catalog', label: 'Movie Catalog', icon: Film },
   { id: 'health', label: 'System Health', icon: Activity },
 ];
@@ -28,7 +34,7 @@ function StatCard({ label, value, sub, icon: Icon }) {
   return (
     <div className="admin-stat-card">
       {Icon && <Icon size={18} className="admin-stat-icon" />}
-      <div className="admin-stat-val">{value ?? '—'}</div>
+      <div className="admin-stat-val">{value ?? '--'}</div>
       <div className="admin-stat-label">{label}</div>
       {sub && <div className="admin-stat-sub">{sub}</div>}
     </div>
@@ -36,36 +42,39 @@ function StatCard({ label, value, sub, icon: Icon }) {
 }
 
 export default function AdminPage({ onBack }) {
+  const { authToken } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stats, setStats] = useState(null);
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
-  // Admin API key — stored in sessionStorage only (never bundled, cleared on tab close)
-  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem('cinematch_admin_key') || '');
-  const [keyInput, setKeyInput] = useState('');
-  const [authFailed, setAuthFailed] = useState(false);
+  const [authError, setAuthError] = useState(false);
 
   // Catalog search
   const [catalogQuery, setCatalogQuery] = useState('');
   const [catalogResults, setCatalogResults] = useState([]);
   const [catalogSearching, setCatalogSearching] = useState(false);
 
-  const loadData = useCallback(async (key) => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setAuthFailed(false);
+    setAuthError(false);
+
+    if (!authToken) {
+      setAuthError(true);
+      setLoading(false);
+      return;
+    }
+
     const [statsRes, healthRes] = await Promise.all([
-      fetchAdminStats(key),
+      fetchAdminStats(authToken),
       fetchHealth(),
     ]);
     if (statsRes.error) {
-      if (statsRes.error.includes('403') || statsRes.error.includes('Invalid admin') ||
-          statsRes.error.includes('503') || statsRes.error.includes('not configured')) {
-        setAuthFailed(true);
-        setAdminKey('');
-        sessionStorage.removeItem('cinematch_admin_key');
+      if (statsRes.error.includes('401') || statsRes.error.includes('Authentication required') ||
+          statsRes.error.includes('Invalid or expired') || statsRes.error.includes('403') ||
+          statsRes.error.includes('Admin access required')) {
+        setAuthError(true);
       }
       setError(statsRes.error);
     } else {
@@ -73,16 +82,11 @@ export default function AdminPage({ onBack }) {
     }
     if (healthRes.data) setHealth(healthRes.data);
     setLoading(false);
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
-    if (adminKey) {
-      loadData(adminKey);
-    } else {
-      setLoading(false);
-      setAuthFailed(true);
-    }
-  }, [adminKey, loadData]);
+    loadData();
+  }, [loadData]);
 
   // Catalog search handler
   useEffect(() => {
@@ -96,16 +100,8 @@ export default function AdminPage({ onBack }) {
     return () => clearTimeout(t);
   }, [catalogQuery]);
 
-  const handleKeySubmit = (e) => {
-    e.preventDefault();
-    if (!keyInput.trim()) return;
-    sessionStorage.setItem('cinematch_admin_key', keyInput.trim());
-    setAdminKey(keyInput.trim());
-    setKeyInput('');
-  };
-
-  // Show key prompt if not authenticated with backend
-  if (authFailed && !loading) {
+  // Auth error: session expired or no token
+  if (authError && !loading) {
     return (
       <div className="admin-page">
         <div className="admin-header">
@@ -115,14 +111,18 @@ export default function AdminPage({ onBack }) {
             </button>
             <div>
               <h1 className="admin-title">CineMatch Admin</h1>
-              <p className="admin-subtitle">Backend authorization required</p>
+              <p className="admin-subtitle">Authentication required</p>
             </div>
           </div>
         </div>
         <div className="admin-info-card" style={{ maxWidth: 480 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+            <AlertTriangle size={18} color="#f59e0b" />
+            <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Session expired or unauthorized</span>
+          </div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
-            Enter the admin API key to access the admin dashboard. This key is set on the backend
-            via the <code style={{ fontSize: '0.78rem' }}>CINEMATCH_ADMIN_KEY</code> environment variable.
+            Your admin session is no longer valid. Please log out and log back in with admin credentials
+            to access the admin dashboard.
           </p>
           {error && (
             <div className="backend-warning" style={{ marginBottom: '0.75rem' }}>
@@ -130,22 +130,9 @@ export default function AdminPage({ onBack }) {
               <span style={{ fontSize: '0.8rem' }}>{error}</span>
             </div>
           )}
-          <form onSubmit={handleKeySubmit} style={{ display: 'flex', gap: '0.5rem' }}>
-            <input
-              type="password"
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              placeholder="Admin API key"
-              className="admin-search-input"
-              style={{
-                flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
-                borderRadius: 'var(--radius-md)', padding: '0.55rem 0.85rem',
-              }}
-            />
-            <button type="submit" className="btn btn-primary" style={{ fontSize: '0.82rem' }}>
-              Authenticate
-            </button>
-          </form>
+          <button className="btn btn-primary" onClick={onBack} style={{ fontSize: '0.82rem' }}>
+            Back to App
+          </button>
         </div>
       </div>
     );
@@ -178,12 +165,12 @@ export default function AdminPage({ onBack }) {
             <p className="admin-subtitle">Operations & System Management</p>
           </div>
         </div>
-        <button className="btn btn-secondary" onClick={() => loadData(adminKey)} style={{ fontSize: '0.78rem' }}>
+        <button className="btn btn-secondary" onClick={loadData} style={{ fontSize: '0.78rem' }}>
           <RefreshCw size={13} /> Refresh
         </button>
       </div>
 
-      {error && (
+      {error && !authError && (
         <div className="backend-warning" style={{ marginBottom: '1rem' }}>
           <AlertTriangle size={16} />
           <span>Backend error: {error}</span>
@@ -210,6 +197,7 @@ export default function AdminPage({ onBack }) {
         {activeTab === 'dataset' && <DatasetTab stats={stats} />}
         {activeTab === 'engine' && <EngineTab model={model} evalMetrics={evalMetrics} stats={stats} />}
         {activeTab === 'analytics' && <AnalyticsTab stats={stats} />}
+        {activeTab === 'users' && <UserManagementTab authToken={authToken} />}
         {activeTab === 'catalog' && (
           <CatalogTab
             query={catalogQuery}
@@ -234,7 +222,8 @@ function DashboardTab({ stats, health }) {
       <div className="admin-stat-grid">
         <StatCard label="Total Movies (CSV)" value={stats.total_movies_csv?.toLocaleString()} icon={Film} />
         <StatCard label="SVD Catalog" value={stats.catalog_movies?.toLocaleString()} icon={Hash} sub="Top movies by vote count" />
-        <StatCard label="Dataset Users" value={stats.dataset_users?.toLocaleString()} icon={Users} />
+        <StatCard label="App Users" value={stats.app_users?.toLocaleString()} icon={Users} sub={`${stats.admin_users || 0} admin(s)`} />
+        <StatCard label="Dataset Users" value={stats.dataset_users?.toLocaleString()} icon={Users} sub="ML training data" />
         <StatCard label="Dataset Ratings" value={stats.dataset_ratings?.toLocaleString()} icon={Star} />
         <StatCard label="SVD Embeddings" value={stats.svd_embeddings?.toLocaleString()} icon={Brain} />
         <StatCard label="Session Ratings" value={stats.session_ratings?.toLocaleString()} icon={Activity} sub={`${stats.session_users || 0} session user(s)`} />
@@ -248,7 +237,7 @@ function DashboardTab({ stats, health }) {
         </div>
         <div className="admin-info-row">
           <span>Latent Factors (k)</span>
-          <span>{stats.model?.k ?? '—'}</span>
+          <span>{stats.model?.k ?? '--'}</span>
         </div>
         <div className="admin-info-row">
           <span>Last Trained</span>
@@ -321,31 +310,31 @@ function EngineTab({ model, evalMetrics, stats }) {
         </div>
         <div className="admin-info-row">
           <span>Latent Factors (k)</span>
-          <span>{model?.k ?? '—'}</span>
+          <span>{model?.k ?? '--'}</span>
         </div>
         <div className="admin-info-row">
           <span>Movies in Model</span>
-          <span>{model?.n_movies?.toLocaleString() ?? '—'}</span>
+          <span>{model?.n_movies?.toLocaleString() ?? '--'}</span>
         </div>
         <div className="admin-info-row">
           <span>Users in Model</span>
-          <span>{model?.n_users?.toLocaleString() ?? '—'}</span>
+          <span>{model?.n_users?.toLocaleString() ?? '--'}</span>
         </div>
         <div className="admin-info-row">
           <span>Ratings Used</span>
-          <span>{model?.n_ratings?.toLocaleString() ?? '—'}</span>
+          <span>{model?.n_ratings?.toLocaleString() ?? '--'}</span>
         </div>
         <div className="admin-info-row">
           <span>Matrix Density</span>
-          <span>{model?.matrix_density_pct != null ? `${model.matrix_density_pct}%` : '—'}</span>
+          <span>{model?.matrix_density_pct != null ? `${model.matrix_density_pct}%` : '--'}</span>
         </div>
         <div className="admin-info-row">
           <span>Explained Variance</span>
-          <span>{model?.explained_variance_ratio != null ? `${(model.explained_variance_ratio * 100).toFixed(1)}%` : '—'}</span>
+          <span>{model?.explained_variance_ratio != null ? `${(model.explained_variance_ratio * 100).toFixed(1)}%` : '--'}</span>
         </div>
         <div className="admin-info-row">
           <span>Training Time</span>
-          <span>{model?.training_time_s != null ? `${model.training_time_s}s` : '—'}</span>
+          <span>{model?.training_time_s != null ? `${model.training_time_s}s` : '--'}</span>
         </div>
         <div className="admin-info-row">
           <span>Last Trained</span>
@@ -398,7 +387,6 @@ function AnalyticsTab({ stats }) {
   const genreDist = stats.genre_distribution || {};
   const mostRated = stats.most_rated_movies || [];
 
-  // Find max for bar scaling
   const maxRatingCount = Math.max(...Object.values(ratingDist), 1);
   const maxGenreCount = Math.max(...Object.values(genreDist), 1);
 
@@ -462,8 +450,8 @@ function AnalyticsTab({ stats }) {
               <div key={m.id} className="admin-table-row">
                 <span className="admin-table-id">{m.id}</span>
                 <span className="admin-table-title">{m.title}</span>
-                <span>{m.vote_count?.toLocaleString() ?? '—'}</span>
-                <span>{m.rating != null ? `${m.rating}` : '—'}</span>
+                <span>{m.vote_count?.toLocaleString() ?? '--'}</span>
+                <span>{m.rating != null ? `${m.rating}` : '--'}</span>
               </div>
             ))}
           </div>
@@ -475,13 +463,279 @@ function AnalyticsTab({ stats }) {
   );
 }
 
+// --- User Management Tab ---
+function UserManagementTab({ authToken }) {
+  const [usersData, setUsersData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [userDetail, setUserDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [roleChanging, setRoleChanging] = useState(false);
+
+  const loadUsers = useCallback(async (search = '') => {
+    setLoading(true);
+    setError(null);
+    const { data, error: err } = await fetchAdminUsers(authToken, search);
+    if (err) {
+      setError(err);
+    } else {
+      setUsersData(data);
+    }
+    setLoading(false);
+  }, [authToken]);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
+
+  // Debounced search
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      loadUsers();
+      return;
+    }
+    const t = setTimeout(() => loadUsers(searchQuery), 400);
+    return () => clearTimeout(t);
+  }, [searchQuery, loadUsers]);
+
+  const handleSelectUser = async (userId) => {
+    setSelectedUser(userId);
+    setDetailLoading(true);
+    const { data, error: err } = await fetchAdminUserDetail(authToken, userId);
+    if (data) setUserDetail(data);
+    if (err) setError(err);
+    setDetailLoading(false);
+  };
+
+  const handleRoleChange = async (userId, newRole) => {
+    setRoleChanging(true);
+    const { data, error: err } = await changeUserRole(authToken, userId, newRole);
+    if (err) {
+      setError(err);
+    } else {
+      // Reload users and detail
+      loadUsers(searchQuery);
+      if (selectedUser === userId) {
+        handleSelectUser(userId);
+      }
+    }
+    setRoleChanging(false);
+  };
+
+  const handleBackToList = () => {
+    setSelectedUser(null);
+    setUserDetail(null);
+  };
+
+  // User detail view
+  if (selectedUser && userDetail) {
+    return (
+      <div>
+        <button
+          className="admin-back-btn"
+          onClick={handleBackToList}
+          style={{ marginBottom: '1rem' }}
+        >
+          <ChevronLeft size={16} /> Back to Users
+        </button>
+
+        <h2 className="admin-section-title">User Details</h2>
+        <div className="admin-info-card">
+          <div className="admin-info-row">
+            <span>User ID</span>
+            <span style={{ fontFamily: 'monospace', fontSize: '0.82rem' }}>{userDetail.user_id}</span>
+          </div>
+          <div className="admin-info-row">
+            <span>Username</span>
+            <span>{userDetail.username}</span>
+          </div>
+          <div className="admin-info-row">
+            <span>Name</span>
+            <span>{userDetail.name}</span>
+          </div>
+          <div className="admin-info-row">
+            <span>Role</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span className={`admin-user-role-badge ${userDetail.role}`}>
+                {userDetail.role === 'admin' ? <Shield size={12} /> : <User size={12} />}
+                {userDetail.role}
+              </span>
+              {userDetail.source !== 'dataset' && userDetail.source !== 'session' && (
+                <button
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem' }}
+                  onClick={() => handleRoleChange(
+                    userDetail.user_id,
+                    userDetail.role === 'admin' ? 'user' : 'admin'
+                  )}
+                  disabled={roleChanging}
+                >
+                  {roleChanging ? '...' : `Change to ${userDetail.role === 'admin' ? 'user' : 'admin'}`}
+                </button>
+              )}
+            </span>
+          </div>
+          <div className="admin-info-row">
+            <span>Source</span>
+            <span className={`admin-user-source-badge ${userDetail.source}`}>{userDetail.source}</span>
+          </div>
+          <div className="admin-info-row">
+            <span>Created</span>
+            <span>{userDetail.created_at || '--'}</span>
+          </div>
+          <div className="admin-info-row">
+            <span>Total Ratings</span>
+            <span>{userDetail.rating_count}</span>
+          </div>
+          <div className="admin-info-row">
+            <span>Average Rating</span>
+            <span>{userDetail.avg_rating != null ? `${userDetail.avg_rating} / 5.0` : '--'}</span>
+          </div>
+        </div>
+
+        {/* Rating History */}
+        <h2 className="admin-section-title" style={{ marginTop: '1.5rem' }}>
+          Rating History ({userDetail.ratings?.length || 0} ratings)
+        </h2>
+        {userDetail.ratings && userDetail.ratings.length > 0 ? (
+          <div className="admin-info-card">
+            <div className="admin-movie-table admin-movie-table--wide">
+              <div className="admin-table-header">
+                <span>Movie ID</span>
+                <span>Title</span>
+                <span>Rating</span>
+                <span>Genres</span>
+              </div>
+              {userDetail.ratings.map((r) => (
+                <div key={r.movie_id} className="admin-table-row">
+                  <span className="admin-table-id">{r.movie_id}</span>
+                  <span className="admin-table-title">{r.title}</span>
+                  <span>
+                    <span className="admin-rating-stars">
+                      {'*'.repeat(Math.round(r.rating))} {r.rating}
+                    </span>
+                  </span>
+                  <span className="admin-table-genres">{(r.genres || []).join(', ')}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="admin-info-card">
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>No ratings recorded for this user.</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Loading detail
+  if (selectedUser && detailLoading) {
+    return (
+      <div style={{ padding: '3rem', textAlign: 'center' }}>
+        <Loader size={24} className="spin" />
+        <p style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>Loading user details...</p>
+      </div>
+    );
+  }
+
+  const userStats = usersData?.stats || {};
+  const users = usersData?.users || [];
+
+  return (
+    <div>
+      <h2 className="admin-section-title">User Management</h2>
+
+      {/* Stats */}
+      <div className="admin-stat-grid">
+        <StatCard label="App Users" value={userStats.total_app_users} icon={Users} />
+        <StatCard label="Admin Users" value={userStats.admin_users} icon={Shield} />
+        <StatCard label="Normal Users" value={userStats.normal_users} icon={User} />
+        <StatCard label="With Ratings" value={userStats.users_with_ratings} icon={Star} />
+        <StatCard label="Session Users" value={userStats.session_users} icon={Activity} sub="Active this session" />
+        <StatCard label="Dataset Users" value={userStats.dataset_users} icon={Database} sub="ML training data" />
+      </div>
+
+      {/* Search */}
+      <div className="admin-search-bar" style={{ marginTop: '1.5rem' }}>
+        <Search size={16} color="#71717a" />
+        <input
+          type="text"
+          placeholder="Search users by username or ID..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="admin-search-input"
+        />
+        {loading && <Loader size={14} className="spin" />}
+      </div>
+
+      {error && (
+        <div className="backend-warning" style={{ marginTop: '0.75rem' }}>
+          <AlertTriangle size={14} />
+          <span style={{ fontSize: '0.8rem' }}>{error}</span>
+        </div>
+      )}
+
+      {/* User Table */}
+      {users.length > 0 ? (
+        <div className="admin-info-card" style={{ marginTop: '1rem' }}>
+          <div className="admin-movie-table admin-movie-table--wide">
+            <div className="admin-table-header">
+              <span>User ID</span>
+              <span>Username</span>
+              <span>Role</span>
+              <span>Source</span>
+              <span>Ratings</span>
+              <span>Avg</span>
+              <span></span>
+            </div>
+            {users.map((u) => (
+              <div key={u.user_id} className="admin-table-row admin-table-row--clickable" onClick={() => handleSelectUser(u.user_id)}>
+                <span className="admin-table-id">{u.user_id}</span>
+                <span className="admin-table-title">{u.username}</span>
+                <span>
+                  <span className={`admin-user-role-badge ${u.role}`}>
+                    {u.role}
+                  </span>
+                </span>
+                <span>
+                  <span className={`admin-user-source-badge ${u.source}`}>{u.source}</span>
+                </span>
+                <span>{u.rating_count}</span>
+                <span>{u.avg_rating != null ? u.avg_rating : '--'}</span>
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>View</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : !loading ? (
+        <div className="admin-info-card" style={{ marginTop: '1rem' }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', textAlign: 'center', padding: '1rem' }}>
+            {searchQuery ? `No users found matching "${searchQuery}"` : 'No users found.'}
+          </p>
+        </div>
+      ) : null}
+
+      {/* Dataset user lookup hint */}
+      <div className="admin-info-card" style={{ marginTop: '1rem' }}>
+        <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+          Dataset users (u_1 through u_{userStats.dataset_users || '2000'}) are ML training data from MovieLens.
+          They are not listed above but can be looked up individually by searching their ID.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // --- Catalog Tab ---
 function CatalogTab({ query, setQuery, results, searching, stats }) {
   return (
     <div>
       <h2 className="admin-section-title">Movie Catalog Search</h2>
       <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-        Search across all {stats?.total_movies_csv?.toLocaleString() || '—'} movies in the dataset.
+        Search across all {stats?.total_movies_csv?.toLocaleString() || '--'} movies in the dataset.
       </p>
 
       <div className="admin-search-bar">
@@ -511,10 +765,10 @@ function CatalogTab({ query, setQuery, results, searching, stats }) {
               <div key={m.id} className="admin-table-row">
                 <span className="admin-table-id">{m.id}</span>
                 <span className="admin-table-title">{m.title}</span>
-                <span>{m.year || '—'}</span>
+                <span>{m.year || '--'}</span>
                 <span className="admin-table-genres">{(m.genres || []).join(', ')}</span>
-                <span>{m.vote_count?.toLocaleString() ?? '—'}</span>
-                <span>{m.rating != null ? `${m.rating}` : '—'}</span>
+                <span>{m.vote_count?.toLocaleString() ?? '--'}</span>
+                <span>{m.rating != null ? `${m.rating}` : '--'}</span>
               </div>
             ))}
           </div>
