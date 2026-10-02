@@ -8,58 +8,79 @@ import FilterBar from './components/FilterBar';
 import MovieDetailsModal from './components/MovieDetailsModal';
 import TasteProfileModal from './components/TasteProfileModal';
 import QuickRateDrawer from './components/QuickRateDrawer';
+import AdminPage from './pages/AdminPage';
 import { useAuth } from './context/AuthContext';
 import AuthPage from './pages/AuthPage';
 import { Sparkles, Film, Star, AlertCircle, Loader, RefreshCw } from 'lucide-react';
 
 export default function App() {
-  const { user, logout } = useAuth();
+  const { user, role, logout } = useAuth();
+
+  const [showAdmin, setShowAdmin] = useState(() => window.location.hash === '#admin');
+
+  useEffect(() => {
+    const onHash = () => setShowAdmin(window.location.hash === '#admin');
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  // --- All hooks declared above. Conditional returns below. ---
 
   if (!user) return <AuthPage />;
 
+  if (showAdmin && role === 'admin') {
+    return (
+      <AdminPage onBack={() => {
+        window.location.hash = '';
+        setShowAdmin(false);
+      }} />
+    );
+  }
+
+  if (showAdmin && role !== 'admin') {
+    window.location.hash = '';
+  }
+
+  return <MainContent user={user} logout={logout} />;
+}
+
+// All main-app hooks live here — always called in the same order within this component.
+function MainContent({ user, logout }) {
   const genreKey = `cinematch_user_genres_${user.id}`;
   const ratingsKey = `cinematch_ratings_${user.id}`;
   const ratedCacheKey = `cinematch_rated_cache_${user.id}`;
 
-  // User preferences
   const [selectedGenres, setSelectedGenres] = useState(() => {
     const saved = localStorage.getItem(genreKey);
     if (saved === 'dismissed') return ['__all__'];
     return saved ? JSON.parse(saved) : [];
   });
 
-  // User ratings: {movieId: starRating}
   const [userRatings, setUserRatings] = useState(() => {
     const saved = localStorage.getItem(ratingsKey);
     return saved ? JSON.parse(saved) : {};
   });
 
-  // Cache of movie objects the user has rated (for My Ratings tab)
   const [ratedMoviesCache, setRatedMoviesCache] = useState(() => {
     const saved = localStorage.getItem(ratedCacheKey);
     return saved ? JSON.parse(saved) : {};
   });
 
-  // Movies from API (catalog browse)
   const [catalogMovies, setCatalogMovies] = useState([]);
   const [catalogPage, setCatalogPage] = useState(1);
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [catalogLoading, setCatalogLoading] = useState(false);
 
-  // Recommendations from ML backend
   const [recommendations, setRecommendations] = useState([]);
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsPersonalized, setRecsPersonalized] = useState(false);
 
-  // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
 
-  // Backend status
-  const [backendAvailable, setBackendAvailable] = useState(null); // null=checking, true, false
+  const [backendAvailable, setBackendAvailable] = useState(null);
 
-  // UI state
   const [activeTab, setActiveTab] = useState('for-you');
   const [sortBy, setSortBy] = useState('popular');
   const [minRating, setMinRating] = useState(0);
@@ -71,7 +92,6 @@ export default function App() {
   const searchDebounceRef = useRef(null);
   const recsDebounceRef = useRef(null);
 
-  // Persist ratings to localStorage
   useEffect(() => {
     localStorage.setItem(ratingsKey, JSON.stringify(userRatings));
   }, [userRatings, ratingsKey]);
@@ -80,19 +100,16 @@ export default function App() {
     localStorage.setItem(ratedCacheKey, JSON.stringify(ratedMoviesCache));
   }, [ratedMoviesCache, ratedCacheKey]);
 
-  // Check backend health on mount
   useEffect(() => {
     checkHealth().then(ok => setBackendAvailable(ok));
   }, []);
 
-  // Load catalog on mount and when tab/sort/genre changes
   useEffect(() => {
     if (activeTab === 'all' || activeTab === 'top-rated') {
       loadCatalog(1);
     }
   }, [activeTab, sortBy]);
 
-  // Fetch recommendations when ratings change or user opens "For You" tab
   useEffect(() => {
     if (activeTab !== 'for-you') return;
     clearTimeout(recsDebounceRef.current);
@@ -102,14 +119,12 @@ export default function App() {
     return () => clearTimeout(recsDebounceRef.current);
   }, [userRatings, selectedGenres, activeTab]);
 
-  // Load initial catalog for QuickRate (needs movies to rate)
   useEffect(() => {
     if (catalogMovies.length === 0) {
       loadCatalog(1);
     }
   }, []);
 
-  // Debounced search
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults([]);
@@ -162,7 +177,6 @@ export default function App() {
   const handleRateMovie = useCallback(async (movieId, rating, movieObject) => {
     setUserRatings(prev => ({ ...prev, [movieId]: rating }));
 
-    // Cache movie object for My Ratings tab
     if (movieObject) {
       setRatedMoviesCache(prev => ({ ...prev, [movieId]: movieObject }));
     }
@@ -170,7 +184,6 @@ export default function App() {
     const title = movieObject?.title || `Movie #${movieId}`;
     showToast(`Rated "${title}" ${rating}★`);
 
-    // Sync to backend (fire-and-forget)
     postRating(user.id, movieId, rating).catch(() => {});
     syncRatingToSupabase(user.id, movieId, rating).catch(() => {});
   }, [user.id]);
@@ -191,7 +204,6 @@ export default function App() {
 
   const ratedCount = Object.keys(userRatings).length;
 
-  // --- Derive displayed movie list based on active tab ---
   const displayedMovies = useMemo(() => {
     if (searchQuery.trim()) return searchResults;
 
@@ -207,7 +219,6 @@ export default function App() {
         .map(([id, m]) => ({ ...m, userRating: userRatings[id] }));
     }
 
-    // 'all' or 'top-rated'
     let list = [...catalogMovies];
     const activeGenres = (selectedGenres || []).filter(g => g !== '__all__' && g !== 'All');
     if (activeGenres.length > 0) {
@@ -225,8 +236,6 @@ export default function App() {
   const isLoading = (activeTab === 'for-you' && recsLoading) ||
     (['all', 'top-rated'].includes(activeTab) && catalogLoading && catalogMovies.length === 0) ||
     (searchQuery && searchLoading);
-
-  // ------------------------------------------------------------------ render
 
   return (
     <div className="app-container">
@@ -257,7 +266,6 @@ export default function App() {
       />
 
       <main className="main-content">
-        {/* Backend unavailable warning */}
         {backendAvailable === false && (
           <div className="backend-warning">
             <AlertCircle size={16} />
@@ -268,7 +276,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Cold-start calibration banner */}
         {ratedCount < 5 && activeTab === 'for-you' && !searchQuery && (
           <div className="calibration-banner">
             <div className="calibration-info">
@@ -300,7 +307,6 @@ export default function App() {
           showSortBy={activeTab !== 'for-you' && activeTab !== 'top-rated'}
         />
 
-        {/* Section header */}
         <div className="section-header">
           <div>
             <h2 className="section-title">
@@ -344,7 +350,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Movie grid */}
         {isLoading ? (
           <div className="loading-state">
             <Loader size={28} className="spin" />
@@ -364,7 +369,6 @@ export default function App() {
               ))}
             </div>
 
-            {/* Load more for catalog tabs */}
             {(activeTab === 'all') && catalogMovies.length < catalogTotal && (
               <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
                 <button

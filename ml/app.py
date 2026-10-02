@@ -22,10 +22,13 @@ import csv
 import json
 import re
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
+
+# Admin API key — set via environment variable. If unset, admin endpoints are disabled.
+ADMIN_API_KEY = os.environ.get("CINEMATCH_ADMIN_KEY", "")
 
 app = FastAPI(title="CineMatch Recommendation API", version="2.0.0")
 app.add_middleware(
@@ -376,6 +379,77 @@ def get_recommend_user(user_id: str, n: int = Query(10, ge=1, le=100)):
     result = _compute_recommendations(ratings, n=n)
     result["user_id"] = user_id
     return result
+
+
+def _verify_admin(key: str):
+    """Verify admin API key. Raises 403 if invalid or not configured."""
+    if not ADMIN_API_KEY:
+        raise HTTPException(status_code=503, detail="Admin API key not configured. Set CINEMATCH_ADMIN_KEY env var.")
+    if key != ADMIN_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin API key.")
+
+
+@app.get("/admin/stats")
+def admin_stats(x_admin_key: str = Header(None)):
+    """Real system statistics for the admin dashboard. Requires X-Admin-Key header."""
+    _verify_admin(x_admin_key)
+    from collections import Counter
+
+    # Rating distribution from dataset
+    rating_dist = Counter()
+    total_dataset_ratings = 0
+    for uid, ratings in dataset_user_ratings.items():
+        for mid, r in ratings.items():
+            rating_dist[str(r)] += 1
+            total_dataset_ratings += 1
+
+    # Ephemeral session ratings
+    session_rating_count = sum(len(r) for r in user_ratings_store.values())
+
+    # Genre distribution from catalog
+    genre_counts = Counter()
+    for m in catalog_movies:
+        for g in m.get("genres", []):
+            genre_counts[g] += 1
+
+    # Most rated movies (top 20 by vote_count from catalog)
+    most_rated = sorted(
+        catalog_movies,
+        key=lambda m: m.get("vote_count") or 0,
+        reverse=True
+    )[:20]
+    most_rated_list = [
+        {"id": m["id"], "title": m["title"], "vote_count": m.get("vote_count"), "rating": m.get("rating")}
+        for m in most_rated
+    ]
+
+    # Load evaluation metrics if available
+    eval_metrics = None
+    if os.path.exists("ml/models/evaluation_metrics.json"):
+        with open("ml/models/evaluation_metrics.json", encoding="utf-8") as f:
+            eval_metrics = json.load(f)
+
+    # Dataset file info
+    data_files = {}
+    for fname in ["data/movies.csv", "data/ratings.csv", "data/processed_movies.json",
+                   "data/processed_ratings.json", "data/movie_stats.json"]:
+        data_files[fname] = os.path.exists(fname)
+
+    return {
+        "total_movies_csv": len(all_movies),
+        "catalog_movies": len(catalog_movies),
+        "svd_embeddings": len(movie_embeddings),
+        "dataset_users": len(dataset_user_ratings),
+        "dataset_ratings": total_dataset_ratings,
+        "session_users": len(user_ratings_store),
+        "session_ratings": session_rating_count,
+        "model": model_meta if model_meta else None,
+        "evaluation": eval_metrics,
+        "rating_distribution": dict(sorted(rating_dist.items())),
+        "genre_distribution": dict(genre_counts.most_common(20)),
+        "most_rated_movies": most_rated_list,
+        "data_files": data_files,
+    }
 
 
 @app.get("/similar/{movie_id}")

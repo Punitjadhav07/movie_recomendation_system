@@ -174,6 +174,20 @@ def main():
     print("\nNote: Predicted rating uses cosine similarity mapped to 1-5 scale.")
     print("RMSE/MAE measure point prediction accuracy; Precision/Recall measure ranking quality.")
 
+    import time as _time
+    eval_results = {
+        "rmse": round(float(rmse), 4),
+        "mae": round(float(mae), 4),
+        "precision_at_10": round(float(prec10), 4),
+        "recall_at_10": round(float(rec10), 4),
+        "rmse_eval_pairs": len(rmse_errors),
+        "precision_eval_users": len(prec_list),
+        "evaluated_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with open("ml/models/evaluation_metrics.json", "w") as f:
+        json.dump(eval_results, f, indent=2)
+    print(f"  Saved evaluation metrics to ml/models/evaluation_metrics.json")
+
 
 if __name__ == "__main__":
     random.seed(42)

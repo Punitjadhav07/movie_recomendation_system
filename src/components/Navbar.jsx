@@ -97,6 +97,15 @@ export default function Navbar({
                 <span className="badge-role user"><User size={12} /> User</span>
               )}
             </div>
+            {role === 'admin' && (
+              <button
+                className="btn-admin-link"
+                onClick={() => { window.location.hash = '#admin'; }}
+                title="Admin Panel"
+              >
+                <Shield size={12} /> Admin
+              </button>
+            )}
             <span className="user-name-label">{user.username || user.name || 'Account'}</span>
             <button className="btn-logout-icon" onClick={logout} title="Sign out of account">
               <LogOut size={14} />

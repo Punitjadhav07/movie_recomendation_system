@@ -82,3 +82,27 @@ export async function postRating(userId, movieId, rating) {
 export async function getSimilarMovies(movieId, n = 4) {
   return req(`/similar/${movieId}?n=${n}`);
 }
+
+/** Fetch full health payload (not just boolean). */
+export async function fetchHealth() {
+  return req('/health');
+}
+
+/** Fetch admin dashboard stats. Requires admin API key. */
+export async function fetchAdminStats(adminKey) {
+  try {
+    const res = await fetch(`${BASE}/admin/stats`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Admin-Key': adminKey || '',
+      },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return { data: null, error: body.detail || `HTTP ${res.status}` };
+    }
+    return { data: await res.json(), error: null };
+  } catch (err) {
+    return { data: null, error: 'ML backend unavailable.' };
+  }
+}
