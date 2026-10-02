@@ -1,0 +1,223 @@
+export const INITIAL_MOVIES = [
+  {
+    id: 1,
+    title: "Inception",
+    year: 2010,
+    genres: ["Sci-Fi", "Action", "Thriller"],
+    rating: 4.8,
+    voteCount: 24500,
+    runtime: "148 min",
+    director: "Christopher Nolan",
+    cast: ["Leonardo DiCaprio", "Joseph Gordon-Levitt", "Elliot Page", "Tom Hardy"],
+    overview: "A thief who steals corporate secrets through the use of dream-sharing technology is given the inverse task of planting an idea into the mind of a C.E.O.",
+    poster: "https://images.unsplash.com/photo-1534447677768-be436bb09401?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1600&auto=format&fit=crop&q=80",
+    featured: true,
+    tagline: "Your mind is the scene of the crime."
+  },
+  {
+    id: 2,
+    title: "Interstellar",
+    year: 2014,
+    genres: ["Sci-Fi", "Drama", "Adventure"],
+    rating: 4.9,
+    voteCount: 22100,
+    runtime: "169 min",
+    director: "Christopher Nolan",
+    cast: ["Matthew McConaughey", "Anne Hathaway", "Jessica Chastain", "Michael Caine"],
+    overview: "When Earth becomes uninhabitable in the future, a farmer and ex-NASA pilot, Joseph Cooper, is tasked to pilot a spacecraft, along with a team of researchers, to find a new planet for humans.",
+    poster: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=1600&auto=format&fit=crop&q=80",
+    featured: true,
+    tagline: "Mankind was born on Earth. It was never meant to die here."
+  },
+  {
+    id: 3,
+    title: "The Dark Knight",
+    year: 2008,
+    genres: ["Action", "Crime", "Drama"],
+    rating: 4.9,
+    voteCount: 28900,
+    runtime: "152 min",
+    director: "Christopher Nolan",
+    cast: ["Christian Bale", "Heath Ledger", "Aaron Eckhart", "Michael Caine"],
+    overview: "When the menace known as the Joker wreaks havoc and chaos on the people of Gotham, Batman must accept one of the greatest psychological and physical tests of his ability to fight injustice.",
+    poster: "https://images.unsplash.com/photo-1509347528160-9a9e33742cdb?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1514565131-fce0801e5785?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "Why so serious?"
+  },
+  {
+    id: 4,
+    title: "Parasite",
+    year: 2019,
+    genres: ["Drama", "Thriller", "Comedy"],
+    rating: 4.8,
+    voteCount: 17800,
+    runtime: "132 min",
+    director: "Bong Joon Ho",
+    cast: ["Song Kang-ho", "Lee Sun-kyun", "Cho Yeo-jeong", "Choi Woo-shik"],
+    overview: "Greed and class discrimination threaten the newly formed symbiotic relationship between the wealthy Park family and the destitute Kim clan.",
+    poster: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "Act like you own the place."
+  },
+  {
+    id: 5,
+    title: "Blade Runner 2049",
+    year: 2017,
+    genres: ["Sci-Fi", "Mystery", "Drama"],
+    rating: 4.7,
+    voteCount: 15300,
+    runtime: "164 min",
+    director: "Denis Villeneuve",
+    cast: ["Ryan Gosling", "Harrison Ford", "Ana de Armas", "Sylvia Hoeks"],
+    overview: "Young Blade Runner K's discovery of a long-buried secret leads him to track down former Blade Runner Rick Deckard, who's been missing for thirty years.",
+    poster: "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "The key to the future is finally unearthed."
+  },
+  {
+    id: 6,
+    title: "Pulp Fiction",
+    year: 1994,
+    genres: ["Crime", "Drama"],
+    rating: 4.9,
+    voteCount: 26400,
+    runtime: "154 min",
+    director: "Quentin Tarantino",
+    cast: ["John Travolta", "Uma Thurman", "Samuel L. Jackson", "Bruce Willis"],
+    overview: "The lives of two mob hitmen, a boxer, a gangster and his wife, and a pair of diner bandits intertwine in four tales of violence and redemption.",
+    poster: "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "Just because you are a character doesn't mean that you have character."
+  },
+  {
+    id: 7,
+    title: "Whiplash",
+    year: 2014,
+    genres: ["Drama", "Music"],
+    rating: 4.8,
+    voteCount: 16200,
+    runtime: "106 min",
+    director: "Damien Chazelle",
+    cast: ["Miles Teller", "J.K. Simmons", "Paul Reiser", "Melissa Benoist"],
+    overview: "A promising young drummer enrolls at a cut-throat music conservatory where his dreams of greatness are mentored by an instructor who will stop at nothing to realize a student's potential.",
+    poster: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "The road to greatness can take you to the edge."
+  },
+  {
+    id: 8,
+    title: "Spider-Man: Into the Spider-Verse",
+    year: 2018,
+    genres: ["Animation", "Action", "Adventure", "Sci-Fi"],
+    rating: 4.8,
+    voteCount: 19400,
+    runtime: "117 min",
+    director: "Bob Persichetti, Peter Ramsey, Rodney Rothman",
+    cast: ["Shameik Moore", "Jake Johnson", "Hailee Steinfeld", "Mahershala Ali"],
+    overview: "Teen Miles Morales becomes the new Spider-Man and joins other Spider-Heroes from parallel universes to stop a threat to all reality.",
+    poster: "https://images.unsplash.com/photo-1635805737707-575885ab0820?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "More than one wears the mask."
+  },
+  {
+    id: 9,
+    title: "Dune: Part Two",
+    year: 2024,
+    genres: ["Sci-Fi", "Adventure", "Action"],
+    rating: 4.9,
+    voteCount: 18200,
+    runtime: "166 min",
+    director: "Denis Villeneuve",
+    cast: ["Timothée Chalamet", "Zendaya", "Rebecca Ferguson", "Javier Bardem"],
+    overview: "Paul Atreides unites with Chani and the Fremen while seeking revenge against the conspirators who destroyed his family.",
+    poster: "https://images.unsplash.com/photo-1509316975850-ff9c5deb0cd9?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?w=1600&auto=format&fit=crop&q=80",
+    featured: true,
+    tagline: "Long live the fighters."
+  },
+  {
+    id: 10,
+    title: "The Grand Budapest Hotel",
+    year: 2014,
+    genres: ["Comedy", "Drama", "Adventure"],
+    rating: 4.7,
+    voteCount: 14900,
+    runtime: "99 min",
+    director: "Wes Anderson",
+    cast: ["Ralph Fiennes", "F. Murray Abraham", "Mathieu Amalric", "Adrien Brody"],
+    overview: "A writer encounters the owner of an aging high-class hotel, who tells him of his early years serving as a lobby boy in the hotel's glorious years under an exceptional concierge.",
+    poster: "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "A lively tale of murder, theft, and the finest hospitality."
+  },
+  {
+    id: 11,
+    title: "Fight Club",
+    year: 1999,
+    genres: ["Drama", "Thriller"],
+    rating: 4.8,
+    voteCount: 23100,
+    runtime: "139 min",
+    director: "David Fincher",
+    cast: ["Brad Pitt", "Edward Norton", "Helena Bonham Carter", "Meat Loaf"],
+    overview: "An insomniac office worker and a devil-may-care soap maker form an underground fight club that evolves into much more.",
+    poster: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1507676184212-d03ab07a01bf?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "Mischief. Mayhem. Soap."
+  },
+  {
+    id: 12,
+    title: "Spirited Away",
+    year: 2001,
+    genres: ["Animation", "Adventure", "Family", "Fantasy"],
+    rating: 4.9,
+    voteCount: 16500,
+    runtime: "125 min",
+    director: "Hayao Miyazaki",
+    cast: ["Rumi Hiiragi", "Miyu Irino", "Mari Natsuki", "Takashi Naito"],
+    overview: "During her family's move to the suburbs, a sullen 10-year-old girl wanders into a world ruled by gods, witches, and spirits, where humans are changed into beasts.",
+    poster: "https://images.unsplash.com/photo-1579783902614-a3fb3927b675?w=800&auto=format&fit=crop&q=80",
+    backdrop: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80",
+    featured: false,
+    tagline: "Nothing that happens is ever forgotten, even if you can't remember."
+  }
+];
+
+export const GENRES = [
+  "All",
+  "Sci-Fi",
+  "Action",
+  "Drama",
+  "Thriller",
+  "Crime",
+  "Adventure",
+  "Animation",
+  "Comedy",
+  "Fantasy",
+  "Music"
+];
+
+// Seed sample user ratings to give instant taste modeling
+export const INITIAL_USER_RATINGS = {
+  1: 5.0, // Inception (5★)
+  2: 5.0, // Interstellar (5★)
+  9: 4.5  // Dune 2 (4.5★)
+};
+
+// Synthetic community users for Collaborative Filtering demonstration
+export const COMMUNITY_USERS = [
+  { id: "u_cinephile", name: "Alex K. (Sci-Fi Specialist)", ratings: { 1: 5, 2: 5, 5: 5, 9: 5, 3: 4 } },
+  { id: "u_thrill", name: "Sarah M. (Dark Thrillers)", ratings: { 3: 5, 6: 5, 11: 5, 4: 4, 1: 4 } },
+  { id: "u_art", name: "Elena R. (Auteur Cinema)", ratings: { 4: 5, 7: 5, 10: 5, 12: 5, 5: 4 } },
+  { id: "u_anim", name: "Kenji T. (Animation & Fantasy)", ratings: { 8: 5, 12: 5, 2: 4, 10: 4 } }
+];
