@@ -155,6 +155,11 @@ export async function fetchAdminUserDetail(token, userId) {
   return adminReq(`/admin/users/${encodeURIComponent(userId)}`, token);
 }
 
+/** Get recommendations for a known user (dataset or session). */
+export async function getRecommendationsForUser(userId, n = 20) {
+  return req(`/recommend/${encodeURIComponent(userId)}?n=${n}`);
+}
+
 /** Change a user's role. */
 export async function changeUserRole(token, userId, role) {
   return adminReq(`/admin/users/${encodeURIComponent(userId)}/role`, token, {

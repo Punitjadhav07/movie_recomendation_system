@@ -29,12 +29,7 @@ export default function App() {
   if (!user) return <AuthPage />;
 
   if (showAdmin && role === 'admin') {
-    return (
-      <AdminPage onBack={() => {
-        window.location.hash = '';
-        setShowAdmin(false);
-      }} />
-    );
+    return <AdminPage />;
   }
 
   if (showAdmin && role !== 'admin') {

@@ -2,19 +2,21 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   fetchAdminStats, fetchHealth, searchMovies,
-  fetchAdminUsers, fetchAdminUserDetail, changeUserRole
+  fetchAdminUsers, fetchAdminUserDetail, changeUserRole,
+  getRecommendationsForUser
 } from '../services/mlApi';
 import {
   LayoutDashboard, Database, Brain, BarChart3, Film, Activity,
   RefreshCw, Search, AlertTriangle, CheckCircle,
-  XCircle, ArrowLeft, Star, Users, Hash, Clock, Loader,
-  User, ChevronLeft, Shield
+  XCircle, Star, Users, Hash, Clock, Loader,
+  User, ChevronLeft, Shield, Zap
 } from 'lucide-react';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'dataset', label: 'Dataset', icon: Database },
   { id: 'engine', label: 'Rec Engine', icon: Brain },
+  { id: 'simulator', label: 'Simulator', icon: Zap },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'users', label: 'Users', icon: Users },
   { id: 'catalog', label: 'Movie Catalog', icon: Film },
@@ -41,8 +43,8 @@ function StatCard({ label, value, sub, icon: Icon }) {
   );
 }
 
-export default function AdminPage({ onBack }) {
-  const { authToken } = useAuth();
+export default function AdminPage() {
+  const { authToken, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stats, setStats] = useState(null);
   const [health, setHealth] = useState(null);
@@ -106,9 +108,6 @@ export default function AdminPage({ onBack }) {
       <div className="admin-page">
         <div className="admin-header">
           <div className="admin-header-left">
-            <button className="admin-back-btn" onClick={onBack}>
-              <ArrowLeft size={16} /> Back to App
-            </button>
             <div>
               <h1 className="admin-title">CineMatch Admin</h1>
               <p className="admin-subtitle">Authentication required</p>
@@ -130,8 +129,8 @@ export default function AdminPage({ onBack }) {
               <span style={{ fontSize: '0.8rem' }}>{error}</span>
             </div>
           )}
-          <button className="btn btn-primary" onClick={onBack} style={{ fontSize: '0.82rem' }}>
-            Back to App
+          <button className="btn btn-primary" onClick={logout} style={{ fontSize: '0.82rem' }}>
+            Log Out
           </button>
         </div>
       </div>
@@ -157,17 +156,19 @@ export default function AdminPage({ onBack }) {
       {/* Header */}
       <div className="admin-header">
         <div className="admin-header-left">
-          <button className="admin-back-btn" onClick={onBack}>
-            <ArrowLeft size={16} /> Back to App
-          </button>
           <div>
             <h1 className="admin-title">CineMatch Admin</h1>
             <p className="admin-subtitle">Operations & System Management</p>
           </div>
         </div>
-        <button className="btn btn-secondary" onClick={loadData} style={{ fontSize: '0.78rem' }}>
-          <RefreshCw size={13} /> Refresh
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <button className="btn btn-secondary" onClick={loadData} style={{ fontSize: '0.78rem' }}>
+            <RefreshCw size={13} /> Refresh
+          </button>
+          <button className="btn btn-secondary" onClick={logout} style={{ fontSize: '0.78rem' }}>
+            Log Out
+          </button>
+        </div>
       </div>
 
       {error && !authError && (
@@ -196,6 +197,7 @@ export default function AdminPage({ onBack }) {
         {activeTab === 'dashboard' && <DashboardTab stats={stats} health={health} />}
         {activeTab === 'dataset' && <DatasetTab stats={stats} />}
         {activeTab === 'engine' && <EngineTab model={model} evalMetrics={evalMetrics} stats={stats} />}
+        {activeTab === 'simulator' && <SimulatorTab stats={stats} />}
         {activeTab === 'analytics' && <AnalyticsTab stats={stats} />}
         {activeTab === 'users' && <UserManagementTab authToken={authToken} />}
         {activeTab === 'catalog' && (
@@ -824,6 +826,132 @@ function HealthTab({ health, stats }) {
               {JSON.stringify(health, null, 2)}
             </pre>
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// --- Recommendation Simulator Tab ---
+function SimulatorTab({ stats }) {
+  const [userId, setUserId] = useState('');
+  const [numRecs, setNumRecs] = useState(10);
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [elapsed, setElapsed] = useState(null);
+
+  const handleGenerate = async () => {
+    if (!userId.trim()) { setError('Enter a user ID'); return; }
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    const start = performance.now();
+    const { data, error: err } = await getRecommendationsForUser(userId.trim(), numRecs);
+    const ms = Math.round(performance.now() - start);
+    setElapsed(ms);
+    if (err) {
+      setError(err);
+    } else {
+      setResult(data);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div>
+      <h2 className="admin-section-title">Recommendation Simulator</h2>
+      <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+        Select a real user and generate recommendations using the backend SVD model.
+        Dataset users: u_1 through u_{stats?.dataset_users || '2000'}.
+        App users: preset_admin, preset_user1, or user_&lt;username&gt;.
+      </p>
+
+      <div className="admin-info-card">
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: '180px' }}>
+            <label style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.25rem' }}>User ID</label>
+            <input
+              type="text"
+              placeholder="e.g. u_42 or preset_user1"
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              className="admin-search-input"
+              style={{ width: '100%', padding: '0.4rem 0.6rem', fontSize: '0.82rem' }}
+            />
+          </div>
+          <div style={{ width: '80px' }}>
+            <label style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.25rem' }}>Count</label>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={numRecs}
+              onChange={(e) => setNumRecs(Math.max(1, Math.min(50, Number(e.target.value))))}
+              className="admin-search-input"
+              style={{ width: '100%', padding: '0.4rem 0.6rem', fontSize: '0.82rem' }}
+            />
+          </div>
+          <button
+            className="btn btn-primary"
+            onClick={handleGenerate}
+            disabled={loading}
+            style={{ fontSize: '0.82rem', whiteSpace: 'nowrap' }}
+          >
+            {loading ? <><Loader size={13} className="spin" /> Generating...</> : 'Generate Recommendations'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="backend-warning" style={{ marginTop: '0.75rem' }}>
+          <AlertTriangle size={14} />
+          <span style={{ fontSize: '0.8rem' }}>{error}</span>
+        </div>
+      )}
+
+      {result && (
+        <>
+          <div className="admin-stat-grid" style={{ marginTop: '1rem' }}>
+            <StatCard label="Algorithm" value={result.algorithm || '--'} icon={Brain} />
+            <StatCard label="Personalized" value={result.is_personalized ? 'Yes' : 'No'} icon={Zap} />
+            <StatCard label="Results" value={result.recommendations?.length || 0} icon={Film} />
+            <StatCard label="Response Time" value={elapsed != null ? `${elapsed}ms` : '--'} icon={Clock} />
+            {result.user_rated_in_catalog != null && (
+              <StatCard label="Rated in Catalog" value={result.user_rated_in_catalog} icon={Star} sub={`${result.total_rated || 0} total rated`} />
+            )}
+          </div>
+
+          {result.note && (
+            <div className="admin-info-card" style={{ marginTop: '0.75rem' }}>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{result.note}</p>
+            </div>
+          )}
+
+          {result.recommendations && result.recommendations.length > 0 && (
+            <div className="admin-info-card" style={{ marginTop: '0.75rem' }}>
+              <div className="admin-movie-table admin-movie-table--wide">
+                <div className="admin-table-header">
+                  <span>#</span>
+                  <span>ID</span>
+                  <span>Title</span>
+                  <span>Predicted</span>
+                  <span>Latent Score</span>
+                  <span>Genres</span>
+                </div>
+                {result.recommendations.map((m, i) => (
+                  <div key={m.id} className="admin-table-row">
+                    <span style={{ color: 'var(--text-muted)' }}>{i + 1}</span>
+                    <span className="admin-table-id">{m.id}</span>
+                    <span className="admin-table-title">{m.title}</span>
+                    <span>{m.predicted_rating != null ? m.predicted_rating : (m.rating != null ? m.rating : '--')}</span>
+                    <span>{m.latent_score != null ? m.latent_score : '--'}</span>
+                    <span className="admin-table-genres">{(m.genres || []).join(', ')}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

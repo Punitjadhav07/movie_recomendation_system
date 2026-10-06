@@ -150,7 +150,7 @@ export const AuthProvider = ({ children }) => {
       }
     }
 
-    return { success: false, error: 'Invalid username or password. Use user1/password@123 or admin/admin@123' };
+    return { success: false, error: 'Invalid username or password' };
   };
 
   const signupWithCredentials = async (username, password) => {
@@ -218,44 +218,6 @@ export const AuthProvider = ({ children }) => {
     return { success: true, isNewUser: true };
   };
 
-  // Google OAuth
-  const loginWithGoogle = async () => {
-    if (supabase) {
-      try {
-        const { error } = await supabase.auth.signInWithOAuth({
-          provider: 'google',
-          options: {
-            redirectTo: window.location.origin
-          }
-        });
-        if (error) throw error;
-      } catch (err) {
-        console.error('Google Sign-In Error:', err);
-        const mockGoogleUser = {
-          id: 'google_user_demo',
-          username: 'Google User',
-          email: 'google.user@gmail.com',
-          avatar_url: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'
-        };
-        setUser(mockGoogleUser);
-        setRole('user');
-        localStorage.setItem('cinematch_auth_user', JSON.stringify(mockGoogleUser));
-        localStorage.setItem('cinematch_auth_role', 'user');
-      }
-    } else {
-      const mockGoogleUser = {
-        id: 'google_user_demo',
-        username: 'Google User',
-        email: 'google.user@gmail.com',
-        avatar_url: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'
-      };
-      setUser(mockGoogleUser);
-      setRole('user');
-      localStorage.setItem('cinematch_auth_user', JSON.stringify(mockGoogleUser));
-      localStorage.setItem('cinematch_auth_role', 'user');
-    }
-  };
-
   const logout = async () => {
     if (authToken) {
       logoutApi(authToken).catch(() => {});
@@ -279,7 +241,6 @@ export const AuthProvider = ({ children }) => {
         authToken,
         loginWithCredentials,
         signupWithCredentials,
-        loginWithGoogle,
         logout
       }}
     >
